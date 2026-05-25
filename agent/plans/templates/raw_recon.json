@@ -1,0 +1,38 @@
+{
+  "template_id": "raw_recon",
+  "template_version": "1.0.0",
+  "domain": "cardiac",
+  "request_type": "raw_recon",
+  "notes": [
+    "Raw reconstruction template skeleton."
+  ],
+  "nodes": [
+    {
+      "node_id": "reconstruct_grappa_010",
+      "tool_name": "reconstruct_grappa",
+      "stage": "reconstruct",
+      "arguments": {
+        "h5_path": "",
+        "output_subdir": "grappa"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Reconstruct raw k-space with GRAPPA"
+    },
+    {
+      "node_id": "qa_snapshot_020",
+      "tool_name": "generate_qa_snapshot",
+      "stage": "qa",
+      "arguments": {
+        "input_nifti": "@node.reconstruct_grappa_010.reconstructed_nifti",
+        "title": "GRAPPA reconstruction",
+        "output_subdir": "qa/grappa"
+      },
+      "required": true,
+      "depends_on": [
+        "reconstruct_grappa_010"
+      ],
+      "label": "Generate QA snapshot of reconstructed volume"
+    }
+  ]
+}

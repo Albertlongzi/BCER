@@ -1,0 +1,68 @@
+# Python / packaging
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Runtime outputs
+runs/
+logs/
+reports/
+debug_artifacts/
+artifacts/
+state/
+tmp/
+.tmp/
+tmp_*/
+*.log
+cufile.log
+
+# Medical imaging data and derived arrays
+*.nii
+*.nii.gz
+*.dcm
+*.h5
+*.hdf5
+*.npz
+*.npy
+
+# Model weights / exported models
+*.pt
+*.pth
+*.pth.tar
+*.ckpt
+*.onnx
+*.ts
+*.safetensors
+
+# Local benchmark manifests and generated results
+benchmark/cases_manifest*.jsonl
+benchmark/case_manifest*.json
+benchmark/benchmark_results*.json
+benchmark/summary*.json
+benchmark/summary*.csv
+benchmark/summary*.txt
+benchmark/*_failed.tsv
+benchmark/tmp_*.json
+
+# Local scratch aliases from the development tree
+@case.input/
+@runtime.case_state_path/
+?/
+
+# Private working files (not for the public repo)
+CLAUDE.md
+.rtk/
+public_stub/

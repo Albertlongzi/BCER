@@ -1,0 +1,4 @@
+-r requirements-base.txt
+h5py>=3.8
+pygrappa
+nibabel>=5.1

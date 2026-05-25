@@ -1,0 +1,10 @@
+pydicom>=2.4
+SimpleITK>=2.3
+numpy>=1.23,<2
+pillow>=10.0
+PyYAML>=6.0
+jsonschema>=4.0
+openai>=1.0
+anthropic>=0.25
+google-generativeai>=0.5
+bm3d

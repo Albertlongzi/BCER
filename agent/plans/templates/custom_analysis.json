@@ -1,0 +1,43 @@
+{
+  "template_id": "custom_analysis",
+  "template_version": "1.0.0",
+  "domain": "*",
+  "request_type": "custom_analysis",
+  "notes": [
+    "Custom analysis scaffold template."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Identify sequences for custom analysis context"
+    },
+    {
+      "node_id": "sandbox_exec_020",
+      "tool_name": "sandbox_exec",
+      "stage": "custom_analysis",
+      "arguments": {
+        "cmd": "",
+        "output_subdir": "sandbox/custom_analysis",
+        "capture_globs": [
+          "*.txt",
+          "*.json"
+        ],
+        "max_output_chars": 4000
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Run sandbox custom analysis scaffold"
+    }
+  ]
+}

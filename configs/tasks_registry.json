@@ -1,0 +1,478 @@
+{
+  "version": "2.0.0",
+  "description": "Task contracts for benchmark runner v2.",
+  "tasks": {
+    "short_denoise": {
+      "domain": ["prostate", "brain"],
+      "toolchain": "short",
+      "request_type": "denoise",
+      "required_modalities": {
+        "prostate": { "any_of": ["T2w", "ADC", "DWI_highb"] },
+        "brain": { "any_of": ["T1", "T1c", "T2", "FLAIR"] }
+      },
+      "goal_template": "Task: short_denoise. Requested workflow type: denoise. Domain: {domain}. Case ID: {case_id}. Case root: {case_root}. Execute denoising (NIfTI-only input) and save denoised outputs.",
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "denoise_image_bm3d" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "denoised_nifti", "tool": "denoise_image_bm3d", "data_key": "denoised_nifti", "must_exist": true }
+      ],
+      "required_stage_success": ["denoise_image_bm3d"],
+      "invariants": [
+        { "id": "denoised_exists", "type": "path_exists", "tool": "denoise_image_bm3d", "data_key": "denoised_nifti" },
+        { "id": "denoised_non_empty", "type": "nifti_nonempty", "tool": "denoise_image_bm3d", "data_key": "denoised_nifti" },
+        {
+          "id": "denoised_affine_consistent",
+          "type": "nifti_affine_match",
+          "lhs": { "tool": "denoise_image_bm3d", "data_key": "denoised_nifti" },
+          "rhs": { "tool": "denoise_image_bm3d", "data_key": "input_nifti" }
+        }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["input_nifti"]
+        },
+        "semantic_swap": {
+          "enabled": false
+        },
+        "space_mismatch": {
+          "enabled": false
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "short_superres": {
+      "domain": ["prostate", "brain"],
+      "toolchain": "short",
+      "request_type": "super_resolution",
+      "required_modalities": {
+        "prostate": { "any_of": ["T2w", "ADC", "DWI_highb"] },
+        "brain": { "any_of": ["T1", "T1c", "T2", "FLAIR"] }
+      },
+      "goal_template": "Task: short_superres. Requested workflow type: super_resolution. Domain: {domain}. Case ID: {case_id}. Case root: {case_root}. Execute super-resolution (NIfTI-only input) and save resampled outputs.",
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "resample_image" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "resampled_nifti", "tool": "resample_image", "data_key": "resampled_nifti", "must_exist": true }
+      ],
+      "required_stage_success": ["resample_image"],
+      "invariants": [
+        { "id": "resampled_exists", "type": "path_exists", "tool": "resample_image", "data_key": "resampled_nifti" },
+        { "id": "resampled_non_empty", "type": "nifti_nonempty", "tool": "resample_image", "data_key": "resampled_nifti" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["input_nifti"]
+        },
+        "semantic_swap": {
+          "enabled": false
+        },
+        "space_mismatch": {
+          "enabled": true,
+          "space_keys": ["target_spacing"],
+          "mutate_interpolation": true
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "medium_register_prostate": {
+      "domain": ["prostate"],
+      "toolchain": "short",
+      "request_type": "register",
+      "required_modalities": {
+        "prostate": { "all_of": ["T2w"], "any_of": ["ADC", "DWI_highb"] }
+      },
+      "goal_template": "Task: medium_register_prostate. Requested workflow type: register. Domain: {domain}. Case ID: {case_id}. Run short register chain identify->register only (ADC->T2w and/or DWI->T2w). Case root: {case_root}.",
+      "notoken_input_aliases": {
+        "prostate": ["t2w_nifti", "adc_nifti", "dwi_highb_nifti"]
+      },
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "register_to_reference" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "registration_resampled", "tool": "register_to_reference", "data_key": "resampled_path", "must_exist": true },
+        { "id": "registration_transform", "tool": "register_to_reference", "data_key": "transform_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "register_to_reference"],
+      "invariants": [
+        { "id": "resampled_exists", "type": "path_exists", "tool": "register_to_reference", "data_key": "resampled_path" },
+        { "id": "resampled_non_empty", "type": "nifti_nonempty", "tool": "register_to_reference", "data_key": "resampled_path" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["fixed", "moving"]
+        },
+        "semantic_swap": {
+          "enabled": true,
+          "swap_pairs": [["fixed", "moving"]],
+          "min_impact": 95
+        },
+        "space_mismatch": {
+          "enabled": true,
+          "mutate_interpolation": true
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "short_segment_brain": {
+      "domain": ["brain"],
+      "toolchain": "short",
+      "request_type": "segment",
+      "required_modalities": {
+        "brain": { "all_of": ["T1", "T1c", "T2", "FLAIR"] }
+      },
+      "goal_template": "Task: short_segment_brain. Requested workflow type: segment. Domain: {domain}. Case ID: {case_id}. Run short segment chain identify->segment only using T1/T1c/T2/FLAIR. Case root: {case_root}.",
+      "notoken_input_aliases": {
+        "brain": ["t1_nifti", "t1c_nifti", "t2_nifti", "flair_nifti"]
+      },
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "brats_mri_segmentation" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "brain_seg", "tool": "brats_mri_segmentation", "data_key": "seg_path", "must_exist": true },
+        { "id": "brain_wt", "tool": "brats_mri_segmentation", "data_key": "wt_mask_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "brats_mri_segmentation"],
+      "invariants": [
+        { "id": "seg_exists", "type": "path_exists", "tool": "brats_mri_segmentation", "data_key": "seg_path" },
+        { "id": "seg_non_empty", "type": "nifti_nonempty", "tool": "brats_mri_segmentation", "data_key": "seg_path" },
+        { "id": "wt_non_empty", "type": "nifti_nonempty", "tool": "brats_mri_segmentation", "data_key": "wt_mask_path" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["t1_path", "t1c_path", "t2_path", "flair_path"]
+        },
+        "semantic_swap": {
+          "enabled": true,
+          "swap_pairs": [["t1c_path", "flair_path"]],
+          "min_impact": 90
+        },
+        "space_mismatch": {
+          "enabled": false
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "medium_brain_grade_classify": {
+      "domain": ["brain"],
+      "toolchain": "medium",
+      "request_type": "classify",
+      "required_modalities": {
+        "brain": { "all_of": ["T1", "T1c", "T2", "FLAIR"] }
+      },
+      "goal_template": "Task: medium_brain_grade_classify. Requested workflow type: classify. Domain: {domain}. Case ID: {case_id}. Run identify->segment->features->grade-classify chain and predict HGG or LGG from tumor features. Case root: {case_root}.",
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "classify_brain_glioma_grade" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "brain_features", "tool": "extract_roi_features", "data_key": "feature_table_path", "must_exist": true },
+        { "id": "brain_grade", "tool": "classify_brain_glioma_grade", "data_key": "classification_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "brats_mri_segmentation", "extract_roi_features", "classify_brain_glioma_grade"],
+      "invariants": [
+        { "id": "brain_features_non_empty", "type": "csv_non_empty", "tool": "extract_roi_features", "data_key": "feature_table_path", "min_rows": 1 },
+        { "id": "brain_grade_non_empty", "type": "json_field_non_empty", "tool": "classify_brain_glioma_grade", "data_key": "classification_path", "json_field": "predicted_grade" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["t1_path", "t1c_path"]
+        },
+        "semantic_swap": {
+          "enabled": true,
+          "swap_pairs": [["t1c_path", "flair_path"]],
+          "min_impact": 90
+        },
+        "space_mismatch": {
+          "enabled": false
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "long_prostate_full": {
+      "domain": ["prostate"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "required_modalities": {
+        "prostate": { "all_of": ["T2w"], "any_of": ["ADC", "DWI_highb"] }
+      },
+      "goal_template": "Task: long_prostate_full. Requested workflow type: full_pipeline. Domain: {domain}. Case ID: {case_id}. Execute identify->register->segment->lesion->features->report. Case root: {case_root}.",
+      "notoken_input_aliases": {
+        "prostate": ["t2w_nifti", "adc_nifti", "dwi_highb_nifti"]
+      },
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "identify_sequences" },
+          { "type": "tool_success", "tool": "register_to_reference" },
+          { "type": "tool_success", "tool": "segment_prostate" },
+          { "type": "tool_success", "tool": "detect_lesion_candidates" },
+          { "type": "tool_success", "tool": "extract_roi_features" },
+          { "type": "tool_success", "tool": "generate_report" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "prostate_mask", "tool": "segment_prostate", "data_key": "prostate_mask_path", "must_exist": true },
+        { "id": "lesion_candidates", "tool": "detect_lesion_candidates", "data_key": "candidates_path", "must_exist": true },
+        { "id": "feature_table", "tool": "extract_roi_features", "data_key": "feature_table_path", "must_exist": true },
+        { "id": "report_json", "tool": "generate_report", "data_key": "report_json_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "register_to_reference", "segment_prostate", "detect_lesion_candidates", "extract_roi_features", "generate_report"],
+      "invariants": [
+        { "id": "prostate_mask_non_empty", "type": "nifti_nonempty", "tool": "segment_prostate", "data_key": "prostate_mask_path" },
+        { "id": "prostate_affine_consistent", "type": "nifti_affine_match", "lhs": { "tool": "segment_prostate", "data_key": "prostate_mask_path" }, "rhs": { "tool": "segment_prostate", "data_key": "t2w_input_path" } },
+        { "id": "lesion_candidates_valid", "type": "candidates_json_valid", "tool": "detect_lesion_candidates", "data_key": "candidates_path" },
+        { "id": "features_non_empty", "type": "csv_non_empty", "tool": "extract_roi_features", "data_key": "feature_table_path", "min_rows": 1 },
+        { "id": "report_non_empty", "type": "json_non_empty", "tool": "generate_report", "data_key": "report_json_path" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["t2w_nifti", "adc_nifti", "prostate_mask_nifti"]
+        },
+        "semantic_swap": {
+          "enabled": true,
+          "swap_pairs": [["fixed", "moving"]],
+          "min_impact": 95
+        },
+        "space_mismatch": {
+          "enabled": true,
+          "mutate_interpolation": true
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "long_cardiac_full": {
+      "domain": ["cardiac"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "required_modalities": {
+        "cardiac": { "any_of": ["cine_nifti", "cine_h5"] }
+      },
+      "goal_template": "Task: long_cardiac_full. Requested workflow type: full_pipeline. Domain: {domain}. Case ID: {case_id}. Execute identify->(reconstruct_if_cine_h5)->cardiac_seg->features->classify->report on cine input. Case root: {case_root}.",
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "identify_sequences" },
+          { "type": "tool_success", "tool": "segment_cardiac_cine" },
+          { "type": "tool_success", "tool": "extract_roi_features" },
+          { "type": "tool_success", "tool": "classify_cardiac_cine_disease" },
+          { "type": "tool_success", "tool": "generate_report" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "cardiac_seg", "tool": "segment_cardiac_cine", "data_key": "seg_path", "must_exist": true },
+        { "id": "cardiac_classification", "tool": "classify_cardiac_cine_disease", "data_key": "classification_path", "must_exist": true },
+        { "id": "cardiac_features", "tool": "extract_roi_features", "data_key": "feature_table_path", "must_exist": true },
+        { "id": "cardiac_report", "tool": "generate_report", "data_key": "report_json_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "segment_cardiac_cine", "extract_roi_features", "classify_cardiac_cine_disease", "generate_report"],
+      "invariants": [
+        { "id": "cardiac_seg_non_empty", "type": "nifti_nonempty", "tool": "segment_cardiac_cine", "data_key": "seg_path" },
+        { "id": "classification_pred_non_empty", "type": "json_field_non_empty", "tool": "classify_cardiac_cine_disease", "data_key": "classification_path", "json_field": "predicted_group" },
+        { "id": "cardiac_features_non_empty", "type": "csv_non_empty", "tool": "extract_roi_features", "data_key": "feature_table_path", "min_rows": 1 },
+        { "id": "cardiac_report_non_empty", "type": "json_non_empty", "tool": "generate_report", "data_key": "report_json_path" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["cine_path", "seg_path"]
+        },
+        "semantic_swap": {
+          "enabled": false
+        },
+        "space_mismatch": {
+          "enabled": false
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
+    "short_recon_grappa": {
+      "domain": ["cardiac"],
+      "toolchain": "short",
+      "request_type": "raw_recon",
+      "required_modalities": {
+        "cardiac": { "any_of": ["h5", "raw_kspace"] }
+      },
+      "goal_template": "Task: short_recon_grappa. Requested workflow type: raw_recon. Domain: {domain}. Case ID: {case_id}. Reconstruct raw k-space via GRAPPA. Case root: {case_root}.",
+      "notoken_input_aliases": {
+        "cardiac": ["raw_kspace"]
+      },
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "reconstruct_grappa" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "reconstructed_nifti", "tool": "reconstruct_grappa", "data_key": "reconstructed_nifti", "must_exist": true }
+      ],
+      "required_stage_success": ["reconstruct_grappa"],
+      "invariants": [
+        { "id": "recon_exists", "type": "path_exists", "tool": "reconstruct_grappa", "data_key": "reconstructed_nifti" },
+        { "id": "recon_non_empty", "type": "nifti_nonempty", "tool": "reconstruct_grappa", "data_key": "reconstructed_nifti" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["h5_path"]
+        },
+        "semantic_swap": {
+          "enabled": false
+        },
+        "space_mismatch": {
+          "enabled": false
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    }
+  }
+}

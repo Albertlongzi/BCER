@@ -1,0 +1,20 @@
+name: bcer-inference
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy<2
+  - pydicom
+  - simpleitk
+  - pillow
+  - pyyaml
+  - jsonschema
+  - nibabel
+  - pytorch
+  - pytorch-cuda=12.1
+  - pip:
+      - monai>=1.3
+      - scikit-image>=0.21

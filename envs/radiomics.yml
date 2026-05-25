@@ -1,0 +1,15 @@
+name: bcer-radiomics
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy<2
+  - simpleitk
+  - nibabel
+  - scipy
+  - scikit-image
+  - pyyaml
+  - jsonschema
+  - pip:
+      - pyradiomics>=3.0

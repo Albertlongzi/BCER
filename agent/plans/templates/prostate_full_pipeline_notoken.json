@@ -1,0 +1,148 @@
+{
+  "template_id": "prostate_full_pipeline_notoken",
+  "template_version": "1.0.0",
+  "domain": "prostate",
+  "request_type": "full_pipeline",
+  "notes": [
+    "BCER-noToken variant: no @auto/@seq tokens for modality inputs.",
+    "Register/segment inputs must be injected from explicit cases_manifest aliases."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Identify and map prostate sequences"
+    },
+    {
+      "node_id": "register_adc_010",
+      "tool_name": "register_to_reference",
+      "stage": "register",
+      "arguments": {
+        "fixed": "${alias:t2w_nifti}",
+        "moving": "${alias:adc_nifti}",
+        "output_subdir": "registration/ADC",
+        "split_by_bvalue": false,
+        "save_png_qc": true
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Register ADC to T2w"
+    },
+    {
+      "node_id": "register_dwi_020",
+      "tool_name": "register_to_reference",
+      "stage": "register",
+      "arguments": {
+        "fixed": "${alias:t2w_nifti}",
+        "moving": "${alias:dwi_highb_nifti}",
+        "output_subdir": "registration/DWI",
+        "split_by_bvalue": true,
+        "save_png_qc": true
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Register DWI/high-b to T2w"
+    },
+    {
+      "node_id": "segment_prostate_030",
+      "tool_name": "segment_prostate",
+      "stage": "segment",
+      "arguments": {
+        "t2w_ref": "${alias:t2w_nifti}",
+        "output_subdir": "segmentation"
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Segment whole-gland prostate mask"
+    },
+    {
+      "node_id": "extract_features_040",
+      "tool_name": "extract_roi_features",
+      "stage": "extract",
+      "arguments": {
+        "output_subdir": "features"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_prostate_030"
+      ],
+      "label": "Extract ROI/radiomics features"
+    },
+    {
+      "node_id": "extract_features_041",
+      "tool_name": "extract_roi_features",
+      "stage": "extract",
+      "arguments": {
+        "output_subdir": "features/lesion"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_prostate_030"
+      ],
+      "label": "Extract lesion-level ROI/radiomics features (optional, second call)"
+    },
+    {
+      "node_id": "detect_lesions_050",
+      "tool_name": "detect_lesion_candidates",
+      "stage": "lesion",
+      "arguments": {
+        "t2w_nifti": "@node.segment_prostate_030.t2w_input_path",
+        "adc_nifti": "@node.register_adc_010.resampled_path",
+        "highb_nifti": "@node.register_dwi_020.resampled_path",
+        "prostate_mask_nifti": "@node.segment_prostate_030.prostate_mask_path",
+        "output_subdir": "lesion"
+      },
+      "required": true,
+      "depends_on": [
+        "segment_prostate_030",
+        "register_adc_010",
+        "register_dwi_020"
+      ],
+      "label": "Detect lesion candidates"
+    },
+    {
+      "node_id": "package_evidence_060",
+      "tool_name": "package_vlm_evidence",
+      "stage": "package",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "vlm"
+      },
+      "required": true,
+      "depends_on": [
+        "segment_prostate_030",
+        "detect_lesions_050"
+      ],
+      "label": "Package VLM evidence"
+    },
+    {
+      "node_id": "generate_report_070",
+      "tool_name": "generate_report",
+      "stage": "report",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "report",
+        "domain": "prostate"
+      },
+      "required": true,
+      "depends_on": [
+        "package_evidence_060"
+      ],
+      "label": "Generate prostate report"
+    }
+  ]
+}

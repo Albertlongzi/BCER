@@ -1,0 +1,42 @@
+{
+  "template_id": "qa",
+  "template_version": "1.0.0",
+  "domain": "*",
+  "request_type": "qa",
+  "notes": [
+    "QA/read-metadata template skeleton."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": false,
+        "require_pydicom": true,
+        "deep_dump": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Identify sequences and parse headers"
+    },
+    {
+      "node_id": "rag_search_020",
+      "tool_name": "rag_search",
+      "stage": "qa",
+      "arguments": {
+        "question": "",
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "qa",
+        "domain": ""
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Answer metadata question from local case outputs"
+    }
+  ]
+}

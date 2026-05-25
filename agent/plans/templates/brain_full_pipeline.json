@@ -1,0 +1,130 @@
+{
+  "template_id": "brain_full_pipeline",
+  "template_version": "1.0.0",
+  "domain": "brain",
+  "request_type": "full_pipeline",
+  "notes": [
+    "Baseline brain full-pipeline skeleton."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Identify brain sequences"
+    },
+    {
+      "node_id": "register_t2_010",
+      "tool_name": "register_to_reference",
+      "stage": "register",
+      "arguments": {
+        "fixed": "T1c",
+        "moving": "T2",
+        "output_subdir": "registration/T2",
+        "save_png_qc": true
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Register T2 to T1c"
+    },
+    {
+      "node_id": "register_flair_020",
+      "tool_name": "register_to_reference",
+      "stage": "register",
+      "arguments": {
+        "fixed": "T1c",
+        "moving": "FLAIR",
+        "output_subdir": "registration/FLAIR",
+        "save_png_qc": true
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Register FLAIR to T1c"
+    },
+    {
+      "node_id": "segment_brats_030",
+      "tool_name": "brats_mri_segmentation",
+      "stage": "segment",
+      "arguments": {
+        "t1c_path": "T1c",
+        "t1_path": "T1",
+        "t2_path": "T2",
+        "flair_path": "FLAIR",
+        "output_subdir": "segmentation/brats_mri_segmentation"
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Segment brain tumor subregions (WT/TC/ET)"
+    },
+    {
+      "node_id": "extract_features_040",
+      "tool_name": "extract_roi_features",
+      "stage": "extract",
+      "arguments": {
+        "output_subdir": "features",
+        "roi_interpretation": "binary_masks"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_brats_030"
+      ],
+      "label": "Extract tumor ROI features"
+    },
+    {
+      "node_id": "classify_brain_grade_050",
+      "tool_name": "classify_brain_glioma_grade",
+      "stage": "classify",
+      "arguments": {
+        "feature_table_path": "@node.extract_features_040.feature_table_path",
+        "output_subdir": "classification/brain_grade"
+      },
+      "required": true,
+      "depends_on": [
+        "extract_features_040"
+      ],
+      "label": "Classify glioma grade (HGG/LGG) from tumor features"
+    },
+    {
+      "node_id": "package_evidence_060",
+      "tool_name": "package_vlm_evidence",
+      "stage": "package",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "vlm"
+      },
+      "required": true,
+      "depends_on": [
+        "segment_brats_030"
+      ],
+      "label": "Package VLM evidence"
+    },
+    {
+      "node_id": "generate_report_070",
+      "tool_name": "generate_report",
+      "stage": "report",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "report",
+        "domain": "brain"
+      },
+      "required": true,
+      "depends_on": [
+        "package_evidence_060"
+      ],
+      "label": "Generate brain tumor report"
+    }
+  ]
+}

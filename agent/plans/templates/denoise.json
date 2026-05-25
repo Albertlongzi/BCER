@@ -1,0 +1,149 @@
+{
+  "template_id": "denoise",
+  "template_version": "1.1.0",
+  "domain": "*",
+  "request_type": "denoise",
+  "notes": [
+    "Denoise BM3D template skeleton.",
+    "Supports up to 4 modalities (e.g. brain T1c/T1/T2/FLAIR) via optional extra denoise nodes."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Convert DICOM to NIfTI before denoising"
+    },
+    {
+      "node_id": "denoise_bm3d_010",
+      "tool_name": "denoise_image_bm3d",
+      "stage": "denoise",
+      "arguments": {
+        "input_nifti": "@auto",
+        "output_subdir": "denoise"
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Denoise primary input volume with BM3D"
+    },
+    {
+      "node_id": "denoise_bm3d_011",
+      "tool_name": "denoise_image_bm3d",
+      "stage": "denoise",
+      "arguments": {
+        "input_nifti": "@auto",
+        "output_subdir": "denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Denoise second modality volume with BM3D (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "denoise_bm3d_012",
+      "tool_name": "denoise_image_bm3d",
+      "stage": "denoise",
+      "arguments": {
+        "input_nifti": "@auto",
+        "output_subdir": "denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Denoise third modality volume with BM3D (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "denoise_bm3d_013",
+      "tool_name": "denoise_image_bm3d",
+      "stage": "denoise",
+      "arguments": {
+        "input_nifti": "@auto",
+        "output_subdir": "denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Denoise fourth modality volume with BM3D (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "compare_denoise_020",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@node.denoise_bm3d_010.input_nifti",
+        "image_b": "@node.denoise_bm3d_010.denoised_nifti",
+        "label_a": "Before (original)",
+        "label_b": "After (BM3D denoised)",
+        "output_subdir": "compare/denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "denoise_bm3d_010"
+      ],
+      "label": "Generate before/after denoise comparison PNG (modality 1)"
+    },
+    {
+      "node_id": "compare_denoise_021",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (BM3D denoised)",
+        "output_subdir": "compare/denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "denoise_bm3d_011"
+      ],
+      "label": "Generate before/after denoise comparison PNG (modality 2, optional)"
+    },
+    {
+      "node_id": "compare_denoise_022",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (BM3D denoised)",
+        "output_subdir": "compare/denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "denoise_bm3d_012"
+      ],
+      "label": "Generate before/after denoise comparison PNG (modality 3, optional)"
+    },
+    {
+      "node_id": "compare_denoise_023",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (BM3D denoised)",
+        "output_subdir": "compare/denoise"
+      },
+      "required": false,
+      "depends_on": [
+        "denoise_bm3d_013"
+      ],
+      "label": "Generate before/after denoise comparison PNG (modality 4, optional)"
+    }
+  ]
+}

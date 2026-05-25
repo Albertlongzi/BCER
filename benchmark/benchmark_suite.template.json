@@ -1,0 +1,51 @@
+{
+  "suite_id": "bcer_public_template",
+  "version": "0.1.0-template",
+  "description": "Template benchmark suite for the BCER public release. Replace dataset roots with local paths or generate manifests with scripts/manifest_builder.py.",
+  "tasks": [
+    {
+      "task_id": "short_denoise",
+      "domain": "brain_or_prostate",
+      "goal": "Run a short denoising workflow and validate the expected output artifact.",
+      "required_stage_success": [
+        "denoise"
+      ],
+      "required_artifacts": [
+        "denoised_volume"
+      ]
+    },
+    {
+      "task_id": "medium_register_prostate",
+      "domain": "prostate",
+      "goal": "Register prostate MRI sequences and validate the aligned output artifact.",
+      "required_stage_success": [
+        "register"
+      ],
+      "required_artifacts": [
+        "registered_volume"
+      ]
+    },
+    {
+      "task_id": "long_prostate_full",
+      "domain": "prostate",
+      "goal": "Run a long-chain prostate MRI workflow ending in structured report generation.",
+      "required_stage_success": [
+        "ingest",
+        "register",
+        "segment",
+        "extract_roi_features",
+        "generate_report"
+      ],
+      "required_artifacts": [
+        "segmentation_mask",
+        "roi_features",
+        "structured_report"
+      ]
+    }
+  ],
+  "notes": [
+    "This file intentionally contains no internal dataset paths.",
+    "Paper-result reproduction still needs a separate RESULT_PROVENANCE.md mapping manuscript tables to exact artifacts and commands.",
+    "Task contracts and validator fields should be finalized before public release."
+  ]
+}

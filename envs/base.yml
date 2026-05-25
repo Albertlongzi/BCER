@@ -1,0 +1,17 @@
+name: bcer-base
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy<2
+  - pydicom
+  - simpleitk
+  - pillow
+  - pyyaml
+  - jsonschema
+  - pip:
+      - openai>=1.0
+      - anthropic>=0.25
+      - google-generativeai>=0.5
+      - bm3d

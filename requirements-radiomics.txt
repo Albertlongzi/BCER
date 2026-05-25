@@ -1,0 +1,4 @@
+-r requirements-base.txt
+nibabel>=5.1
+scikit-image>=0.21
+pyradiomics>=3.0

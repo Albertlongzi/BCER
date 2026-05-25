@@ -1,0 +1,311 @@
+{
+  "skills": [
+    {
+      "name": "prostate_mpmri_core",
+      "description": "Core prostate mpMRI workflow: ingest, identify, register, segment, features, report.",
+      "tools": [
+        "ingest_dicom_to_nifti",
+        "identify_sequences",
+        "register_to_reference",
+        "segment_prostate",
+        "extract_roi_features",
+        "package_vlm_evidence",
+        "generate_report"
+      ],
+      "inputs": [
+        "T2w",
+        "ADC",
+        "DWI/TRACEW"
+      ],
+      "checks": [
+        "Use T2w as fixed reference; register ADC/DWI into T2w space.",
+        "Prefer NIfTI outputs from identify_sequences over raw DICOM dirs.",
+        "If DWI lacks b-values, treat it as TRACEW and still register."
+      ],
+      "preconditions": [
+        "T2w as reference",
+        "ADC/DWI registered to T2w",
+        "Prostate mask available before feature extraction"
+      ],
+      "outputs": [
+        "features.csv",
+        "vlm_evidence_bundle.json",
+        "report.json"
+      ],
+      "tags": [
+        "prostate",
+        "mpmri",
+        "mri"
+      ]
+    },
+    {
+      "name": "prostate_lesion_candidates",
+      "description": "Lesion candidate detection after features and registration (run when high-b DWI is available).",
+      "tools": [
+        "detect_lesion_candidates",
+        "extract_roi_features",
+        "package_vlm_evidence"
+      ],
+      "inputs": [
+        "T2w (registered)",
+        "ADC (registered)",
+        "high-b DWI (registered)",
+        "prostate mask"
+      ],
+      "checks": [
+        "Require whole-gland mask and registered ADC + high-b DWI.",
+        "If DWI/ADC QC overlays suggest severe distortion, run correct_prostate_distortion before detect_lesion_candidates.",
+        "If high-b DWI is present, run lesion detection before reporting; only skip if high-b DWI is missing."
+      ],
+      "preconditions": [
+        "ADC + DWI registered",
+        "Whole-gland mask present",
+        "ROI features extracted"
+      ],
+      "outputs": [
+        "lesion_mask.nii.gz",
+        "lesion_features.csv"
+      ],
+      "tags": [
+        "prostate",
+        "lesion",
+        "mri"
+      ]
+    },
+    {
+      "name": "prostate_report_writer",
+      "description": "Write a prostate MRI report by executing the full mpMRI pipeline: ingest DICOM, identify sequences, register ADC/DWI to T2w, segment prostate, extract ROI features, package evidence, then generate the report.",
+      "tools": [
+        "ingest_dicom_to_nifti",
+        "identify_sequences",
+        "register_to_reference",
+        "segment_prostate",
+        "extract_roi_features",
+        "package_vlm_evidence",
+        "generate_report"
+      ],
+      "inputs": [
+        "T2w",
+        "ADC",
+        "DWI/TRACEW"
+      ],
+      "checks": [
+        "Generate whole-gland ROI features before any lesion-only feature runs.",
+        "Package evidence before generate_report so overlays are available.",
+        "PI-RADS v2.1 scoring: PZ uses DWI/ADC (1 normal, 2 diffuse abnormal without focal lesion, 3 focal abnormal without typical T2, 4 marked diffusion <1.5 cm, 5 same >=1.5 cm/EPE); TZ uses T2 (1 typical BPH, 2 encapsulated nodule, 3 atypical, 4 ill-defined low T2 <1.5 cm, 5 same >=1.5 cm)."
+      ],
+      "preconditions": [
+        "T2w is the reference series",
+        "ADC and DWI are registered into T2w space",
+        "Whole-gland or zonal mask exists before feature extraction",
+        "ROI features are extracted before report generation"
+      ],
+      "outputs": [
+        "features.csv",
+        "vlm_evidence_bundle.json",
+        "report.json",
+        "report.txt"
+      ],
+      "tags": [
+        "prostate",
+        "mpmri",
+        "report"
+      ]
+    },
+    {
+      "name": "brain_tumor_core",
+      "description": "Standard Brain Tumor (BraTS) workflow: Identify sequences, Register structural/functional to T1c, Segment tumor subregions, Extract features, and Report.",
+      "tools": [
+        "identify_sequences",
+        "register_to_reference",
+        "brats_mri_segmentation",
+        "extract_roi_features",
+        "package_vlm_evidence",
+        "generate_report"
+      ],
+      "inputs": [
+        "T1c (preferred) or T1",
+        "T1",
+        "T2",
+        "FLAIR"
+      ],
+      "checks": [
+        "Register T2/FLAIR to T1c (or T1 fallback) before segmentation.",
+        "Ensure 4-channel aligned inputs before brats_mri_segmentation."
+      ],
+      "preconditions": [
+        "T1c (or T1) is the fixed reference",
+        "T2 and FLAIR are registered to T1c",
+        "4-channel input ready for segmentation"
+      ],
+      "outputs": [
+        "brats_segmentation.nii.gz",
+        "features.csv",
+        "report.json"
+      ],
+      "tags": [
+        "brain",
+        "tumor",
+        "mri"
+      ]
+    },
+    {
+      "name": "brain_report_writer",
+      "description": "Generate a Neuro-Oncology report by executing the full pipeline: Identify T1/T1c/T2/FLAIR, Register to T1c, Segment tumor (WT/TC/ET), and compile evidence.",
+      "tools": [
+        "identify_sequences",
+        "register_to_reference",
+        "brats_mri_segmentation",
+        "extract_roi_features",
+        "package_vlm_evidence",
+        "generate_report"
+      ],
+      "inputs": [
+        "T1c (preferred) or T1",
+        "T1",
+        "T2",
+        "FLAIR"
+      ],
+      "checks": [
+        "Use brats_mri_segmentation masks (WT/TC/ET) for ROI features.",
+        "Package evidence before generate_report for VLM review."
+      ],
+      "preconditions": [
+        "T1c is reference",
+        "All sequences aligned",
+        "Tumor masks generated"
+      ],
+      "outputs": [
+        "features.csv",
+        "vlm_evidence_bundle.json",
+        "report.txt"
+      ],
+      "tags": [
+        "brain",
+        "report",
+        "mri"
+      ]
+    },
+    {
+      "name": "brain_sequence_interpretation",
+      "description": "Brain MRI qualitative interpretation cheat-sheet for tumor assessment. Use in the Findings section alongside quantitative features.",
+      "tools": [
+        "generate_report"
+      ],
+      "inputs": [
+        "T1",
+        "T1c",
+        "T2",
+        "FLAIR",
+        "overlays/tiles"
+      ],
+      "checks": [
+        "Use indeterminate language if enhancement/necrosis/edema are not clearly supported.",
+        "Cite image tiles or overlays when using VLM-backed qualitative statements."
+      ],
+      "preconditions": [
+        "T1/T1c/T2/FLAIR available",
+        "VLM or reviewer has access to image tiles"
+      ],
+      "outputs": [
+        "report.txt"
+      ],
+      "tags": [
+        "brain",
+        "radiology",
+        "interpretation"
+      ],
+      "guidance": {
+        "T1": {
+          "normal": "White matter bright, gray matter darker, CSF black.",
+          "tumor": "Hypointense mass compared to normal brain.",
+          "phrases": [
+            "T1 hypointense mass detected."
+          ]
+        },
+        "T1c": {
+          "normal": "Normal brain parenchyma does not enhance.",
+          "tumor": [
+            "Ring enhancement suggests necrosis.",
+            "Solid enhancement suggests viable tumor."
+          ],
+          "phrases": [
+            "Rim enhancement suggesting necrosis.",
+            "Solid enhancement within the tumor."
+          ]
+        },
+        "T2": {
+          "normal": "CSF bright, brain intermediate.",
+          "tumor": "Heterogeneous hyperintensity indicating tumor extent.",
+          "phrases": [
+            "Heterogeneous T2 hyperintensity consistent with tumor extent."
+          ]
+        },
+        "FLAIR": {
+          "normal": "CSF suppressed (dark).",
+          "tumor": "Peritumoral edema appears hyperintense.",
+          "phrases": [
+            "Extensive peritumoral FLAIR hyperintensity consistent with edema."
+          ]
+        }
+      }
+    },
+    {
+      "name": "cardiac_cine_core",
+      "description": "Cardiac cine disease workflow: identify cine sequence, run nnUNet segmentation, classify disease group, package evidence, and optionally generate report.",
+      "tools": [
+        "identify_sequences",
+        "segment_cardiac_cine",
+        "classify_cardiac_cine_disease",
+        "package_vlm_evidence",
+        "generate_report"
+      ],
+      "inputs": [
+        "CINE"
+      ],
+      "checks": [
+        "Prefer NIfTI cine input for segment_cardiac_cine (from identify_sequences mapping CINE).",
+        "Use local cmr_reverse Task900_ACDC_Phys weights through segment_cardiac_cine.",
+        "ACDC ambiguity rule: HCM requires LVEF > 55%; if LVEF < 40% with local thickness increase, classify as MINF.",
+        "ACDC ambiguity rule: high LV diastolic volume + low LVEF + only several abnormal contraction segments -> MINF.",
+        "ACDC ambiguity rule: dilated LV and RV (with or without RV dysfunction) -> DCM.",
+        "ACDC ambiguity rule: RV EF between 40% and 45% is borderline; do not force RV class."
+      ],
+      "preconditions": [
+        "CINE input exists and is readable",
+        "cmr_reverse nnUNet weights are available",
+        "cardiac segmentation exists before classify_cardiac_cine_disease"
+      ],
+      "outputs": [
+        "cardiac segmentation label map",
+        "rv/myo/lv masks",
+        "cardiac_cine_classification.json",
+        "vlm_evidence_bundle.json"
+      ],
+      "tags": [
+        "cardiac",
+        "cine",
+        "mri"
+      ]
+    }
+  ],
+  "skill_sets": {
+    "prostate_mpmri": [
+      "prostate_mpmri_core",
+      "prostate_lesion_candidates"
+    ],
+    "prostate_reporting": [
+      "prostate_report_writer"
+    ],
+    "brain_tumor": [
+      "brain_tumor_core"
+    ],
+    "brain_reporting": [
+      "brain_report_writer",
+      "brain_sequence_interpretation"
+    ],
+    "cardiac_cine": [
+      "cardiac_cine_core"
+    ]
+  }
+}

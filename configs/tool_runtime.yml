@@ -1,0 +1,55 @@
+# BCER tool runtime profile.
+#
+# default_dispatch:
+#   inprocess  - current v3 behavior; all tools run in the agent process.
+#   auto       - run inference/recon/radiomics tiers through subprocess dispatch.
+#   subprocess - run every configured tier through subprocess dispatch.
+#
+# Override at runtime with:
+#   BCER_TOOL_DISPATCH=auto
+#   BCER_TOOL_RUNTIME_CONFIG=/path/to/tool_runtime.yml
+
+default_dispatch: inprocess
+assets_root: assets
+
+tiers:
+  base:
+    conda_env: bcer-base
+    timeout_seconds: 600
+  inference:
+    conda_env: bcer-inference
+    timeout_seconds: 3600
+  recon:
+    conda_env: bcer-recon
+    timeout_seconds: 1800
+  radiomics:
+    conda_env: bcer-radiomics
+    timeout_seconds: 1800
+
+tool_tiers:
+  base:
+    - identify_sequences
+    - ingest_dicom_to_nifti
+    - register_to_reference
+    - alignment_qc
+    - materialize_registration
+    - denoise_image_bm3d
+    - resample_image
+    - compare_nifti_slices
+    - generate_qa_snapshot
+    - package_vlm_evidence
+    - generate_report
+    - rag_search
+    - sandbox_exec
+    - classify_brain_glioma_grade
+    - classify_cardiac_cine_disease
+  inference:
+    - segment_prostate
+    - brats_mri_segmentation
+    - segment_cardiac_cine
+    - detect_lesion_candidates
+    - correct_prostate_distortion
+  recon:
+    - reconstruct_grappa
+  radiomics:
+    - extract_roi_features

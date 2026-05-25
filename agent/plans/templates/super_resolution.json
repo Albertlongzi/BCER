@@ -1,0 +1,211 @@
+{
+  "template_id": "super_resolution",
+  "template_version": "1.1.0",
+  "domain": "*",
+  "request_type": "super_resolution",
+  "notes": [
+    "Super-resolution (resample) template skeleton.",
+    "Supports up to 5 modalities via optional extra resample nodes (011-014).",
+    "Supports up to 5 QC comparisons via optional extra compare nodes (021-024)."
+  ],
+  "nodes": [
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Convert DICOM to NIfTI before super-resolution"
+    },
+    {
+      "node_id": "resample_sr_010",
+      "tool_name": "resample_image",
+      "stage": "super_resolution",
+      "arguments": {
+        "input_nifti": "@auto",
+        "target_spacing": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "interpolation": "bspline",
+        "output_subdir": "resample"
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Upsample primary volume with classical resampling (2x spacing reduction)"
+    },
+    {
+      "node_id": "resample_sr_011",
+      "tool_name": "resample_image",
+      "stage": "super_resolution",
+      "arguments": {
+        "input_nifti": "@auto",
+        "target_spacing": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "interpolation": "bspline",
+        "output_subdir": "resample"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Upsample second modality (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "resample_sr_012",
+      "tool_name": "resample_image",
+      "stage": "super_resolution",
+      "arguments": {
+        "input_nifti": "@auto",
+        "target_spacing": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "interpolation": "bspline",
+        "output_subdir": "resample"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Upsample third modality (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "resample_sr_013",
+      "tool_name": "resample_image",
+      "stage": "super_resolution",
+      "arguments": {
+        "input_nifti": "@auto",
+        "target_spacing": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "interpolation": "bspline",
+        "output_subdir": "resample"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Upsample fourth modality (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "resample_sr_014",
+      "tool_name": "resample_image",
+      "stage": "super_resolution",
+      "arguments": {
+        "input_nifti": "@auto",
+        "target_spacing": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "interpolation": "bspline",
+        "output_subdir": "resample"
+      },
+      "required": false,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Upsample fifth modality (optional, multi-modality cases)"
+    },
+    {
+      "node_id": "compare_superres_020",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@node.resample_sr_010.input_nifti",
+        "image_b": "@node.resample_sr_010.resampled_nifti",
+        "label_a": "Before (original)",
+        "label_b": "After (2x super-resolution)",
+        "output_subdir": "compare/super_resolution"
+      },
+      "required": false,
+      "depends_on": [
+        "resample_sr_010"
+      ],
+      "label": "Generate before/after super-resolution comparison PNG (modality 1)"
+    },
+    {
+      "node_id": "compare_superres_021",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (super-resolution)",
+        "output_subdir": "compare/super_resolution"
+      },
+      "required": false,
+      "depends_on": [
+        "resample_sr_011"
+      ],
+      "label": "Before/after comparison (modality 2, optional)"
+    },
+    {
+      "node_id": "compare_superres_022",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (super-resolution)",
+        "output_subdir": "compare/super_resolution"
+      },
+      "required": false,
+      "depends_on": [
+        "resample_sr_012"
+      ],
+      "label": "Before/after comparison (modality 3, optional)"
+    },
+    {
+      "node_id": "compare_superres_023",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (super-resolution)",
+        "output_subdir": "compare/super_resolution"
+      },
+      "required": false,
+      "depends_on": [
+        "resample_sr_013"
+      ],
+      "label": "Before/after comparison (modality 4, optional)"
+    },
+    {
+      "node_id": "compare_superres_024",
+      "tool_name": "compare_nifti_slices",
+      "stage": "compare",
+      "arguments": {
+        "image_a": "@auto",
+        "image_b": "@auto",
+        "label_a": "Before (original)",
+        "label_b": "After (super-resolution)",
+        "output_subdir": "compare/super_resolution"
+      },
+      "required": false,
+      "depends_on": [
+        "resample_sr_014"
+      ],
+      "label": "Before/after comparison (modality 5, optional)"
+    }
+  ]
+}

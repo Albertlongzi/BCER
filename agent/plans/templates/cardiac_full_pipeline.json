@@ -1,0 +1,127 @@
+{
+  "template_id": "cardiac_full_pipeline",
+  "template_version": "1.1.0",
+  "domain": "cardiac",
+  "request_type": "full_pipeline",
+  "notes": [
+    "Baseline cardiac full-pipeline skeleton.",
+    "Supports both DICOM/NIfTI cine cases and raw k-space H5 cases (reconstruct_grappa_005 is optional)."
+  ],
+  "nodes": [
+    {
+      "node_id": "reconstruct_grappa_005",
+      "tool_name": "reconstruct_grappa",
+      "stage": "reconstruct",
+      "arguments": {
+        "h5_path": "@case.file",
+        "output_subdir": "reconstruction"
+      },
+      "required": false,
+      "depends_on": [],
+      "label": "Reconstruct cardiac cine from raw k-space H5 (optional, H5 cases only)"
+    },
+    {
+      "node_id": "identify_sequences_001",
+      "tool_name": "identify_sequences",
+      "stage": "identify",
+      "arguments": {
+        "dicom_case_dir": "@case.input",
+        "convert_to_nifti": true,
+        "output_subdir": "ingest"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Identify cardiac cine sequence"
+    },
+    {
+      "node_id": "segment_cine_020",
+      "tool_name": "segment_cardiac_cine",
+      "stage": "segment",
+      "arguments": {
+        "cine_path": "CINE",
+        "output_subdir": "segmentation/cardiac_cine"
+      },
+      "required": true,
+      "depends_on": [
+        "identify_sequences_001"
+      ],
+      "label": "Segment cardiac cine"
+    },
+    {
+      "node_id": "classify_cine_030",
+      "tool_name": "classify_cardiac_cine_disease",
+      "stage": "report",
+      "arguments": {
+        "cine_path": "CINE",
+        "seg_path": "@node.segment_cine_020.seg_path",
+        "seg_dir": "@node.segment_cine_020.pred_dir",
+        "output_subdir": "classification/cardiac_cine"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_cine_020"
+      ],
+      "label": "Classify cardiac disease group"
+    },
+    {
+      "node_id": "extract_features_040",
+      "tool_name": "extract_roi_features",
+      "stage": "extract",
+      "arguments": {
+        "output_subdir": "features",
+        "roi_interpretation": "cardiac"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_cine_020"
+      ],
+      "label": "Extract cardiac ROI features"
+    },
+    {
+      "node_id": "qa_snapshot_050",
+      "tool_name": "generate_qa_snapshot",
+      "stage": "qa",
+      "arguments": {
+        "input_nifti": "@auto",
+        "seg_dir": "@node.segment_cine_020.pred_dir",
+        "title": "Cardiac cine – segmentation overlay",
+        "output_subdir": "qa/cardiac"
+      },
+      "required": false,
+      "depends_on": [
+        "segment_cine_020"
+      ],
+      "label": "QA snapshot with segmentation overlay"
+    },
+    {
+      "node_id": "package_evidence_060",
+      "tool_name": "package_vlm_evidence",
+      "stage": "package",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "vlm"
+      },
+      "required": true,
+      "depends_on": [
+        "segment_cine_020",
+        "classify_cine_030"
+      ],
+      "label": "Package VLM evidence"
+    },
+    {
+      "node_id": "generate_report_070",
+      "tool_name": "generate_report",
+      "stage": "report",
+      "arguments": {
+        "case_state_path": "@runtime.case_state_path",
+        "output_subdir": "report",
+        "domain": "cardiac"
+      },
+      "required": true,
+      "depends_on": [
+        "package_evidence_060"
+      ],
+      "label": "Generate cardiac report"
+    }
+  ]
+}

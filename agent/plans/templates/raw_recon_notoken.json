@@ -1,0 +1,24 @@
+{
+  "template_id": "raw_recon_notoken",
+  "template_version": "1.0.0",
+  "domain": "cardiac",
+  "request_type": "raw_recon",
+  "notes": [
+    "BCER-noToken variant: explicit raw_kspace alias injection only.",
+    "QA snapshot node is omitted to avoid cross-node symbolic path flow (@node.*)."
+  ],
+  "nodes": [
+    {
+      "node_id": "reconstruct_grappa_010",
+      "tool_name": "reconstruct_grappa",
+      "stage": "reconstruct",
+      "arguments": {
+        "h5_path": "${alias:raw_kspace}",
+        "output_subdir": "grappa"
+      },
+      "required": true,
+      "depends_on": [],
+      "label": "Reconstruct raw k-space with GRAPPA"
+    }
+  ]
+}
