@@ -1,7 +1,7 @@
 <h1 align="center">BCER</h1>
 
 <p align="center">
-  <b>Bounded Cerebellum Execution Runtime</b><br>
+  <b>Brain–Cerebellum–Extremity–Reflector</b><br>
   An agent framework for reliable execution of long-horizon MRI analysis workflows.
 </p>
 
@@ -14,21 +14,24 @@
 
 ---
 
-BCER separates **planning** (constrained sketch over a tool catalogue) from
-**execution** (a deterministic cerebellum runtime that binds symbolic artifacts
-to concrete files) and adds **bounded local recovery** (a two-tier reflector
-that repairs recoverable failures and halts on nonrecoverable ones).
+BCER stands for **Brain–Cerebellum–Extremity–Reflector**. It separates
+**planning** (the Brain; a constrained sketch over a tool catalogue) from
+**execution** (the Cerebellum; a deterministic runtime that binds symbolic
+artifacts to concrete files), calls MRI tools as typed **Extremities**, and adds
+**bounded local recovery** through a two-tier **Reflector** that repairs
+recoverable failures and halts on nonrecoverable ones.
 
 This repository accompanies the MICCAI paper. It contains:
 
-- the BCER agent controller, planner, compiler, and reflector,
+- the BCER Brain planner, Cerebellum executor, Extremity tool layer, and
+  Reflector recovery loop,
 - a strict tool registry with **21 MRI-domain tools** across prostate, brain, and cardiac workflows,
 - a **benchmark harness** with fault injection (8 fault types) and 4 controller arms,
 - a **smoke benchmark** that proves install correctness without medical data.
 
 ```
                    ┌──────────────────────────────┐
-   user goal ────▶ │  Planner  (constrained sketch) │
+   user goal ────▶ │  Brain (constrained sketch)     │
                    └──────────────┬───────────────┘
                                   │  sketch JSON
                                   ▼
@@ -38,7 +41,7 @@ This repository accompanies the MICCAI paper. It contains:
                                   │  validated DAG
                                   ▼
                    ┌──────────────────────────────┐         ┌──────────────────┐
-                   │  Cerebellum (executor)        │ ──────▶ │  Tool registry    │
+                   │  Cerebellum (executor)        │ ──────▶ │  Extremity tools  │
                    └──────────────┬───────────────┘         └──────────────────┘
                                   │  on failure
                                   ▼
@@ -181,6 +184,26 @@ domain and how to bring a non-standard dataset.
 | [`docs/TOOL_ENV_ANALYSIS.md`](docs/TOOL_ENV_ANALYSIS.md) | Environment tiering and subprocess dispatch architecture |
 | [`benchmark/README.md`](benchmark/README.md) | Benchmark CLI and outputs |
 | [`docs/cardiac_acdc_classification_rules.md`](docs/cardiac_acdc_classification_rules.md) | Rule-based cardiac classifier |
+
+---
+
+## v4 preview
+
+The repository tracks the v3 paper code path. A v4 line is in progress and
+will be released separately.
+
+The v4 direction is a more interactive MRI workstation built around:
+
+- a web UI with chat, action graph, artifact viewer, and node inspector panes,
+- natural-language conversation for proposing and revising MRI workflows,
+- visible action-graph planning before deterministic execution,
+- human-in-the-loop review, patching, and rerun controls,
+- evidence-linked artifacts and reports.
+
+The current v4 scaffold already includes a mock FastAPI backend, static
+workstation UI shell, shared `ActionGraph` schema, deterministic executor
+store, OpenAI-compatible Brain client, and a read-only bridge into the v3 tool
+catalogue. It is still a work in progress and is **to be released**.
 
 ---
 
