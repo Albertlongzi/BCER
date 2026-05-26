@@ -9,7 +9,7 @@
   <a href="#quickstart"><img alt="Quickstart" src="https://img.shields.io/badge/quickstart-5%20min-2ea44f"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.9%2B-blue">
-  <img alt="Status" src="https://img.shields.io/badge/status-paper%20release-orange">
+  <img alt="Status" src="https://img.shields.io/badge/status-early%20release-orange">
 </p>
 
 ---
@@ -178,12 +178,10 @@ domain and how to bring a non-standard dataset.
 
 ---
 
-## v4 preview
+## In development
 
-The repository tracks the v3 paper code path. A v4 line is in progress and
-will be released separately.
-
-The v4 direction is a more interactive MRI workstation built around:
+We are actively exploring the next version of BCER as a more interactive MRI
+workstation built around:
 
 - a web UI with chat, action graph, artifact viewer, and node inspector panes,
 - natural-language conversation for proposing and revising MRI workflows,
@@ -191,10 +189,11 @@ The v4 direction is a more interactive MRI workstation built around:
 - human-in-the-loop review, patching, and rerun controls,
 - evidence-linked artifacts and reports.
 
-The current v4 scaffold already includes a mock FastAPI backend, static
+An early scaffold is already in the repository — mock FastAPI backend, static
 workstation UI shell, shared `ActionGraph` schema, deterministic executor
-store, OpenAI-compatible Brain client, and a read-only bridge into the v3 tool
-catalogue. It is still a work in progress and is **to be released**.
+store, OpenAI-compatible Brain client, and a read-only bridge into the
+existing tool catalogue — but this line is still exploratory and not yet
+ready for general use.
 
 ---
 
@@ -223,8 +222,10 @@ BCER is a **research framework**, not a clinically validated product. It is
 intended for studying the reliability of agent execution on multi-step
 imaging workflows. It does not replace expert radiological review.
 
-The repository tracks the v3 paper code path. Issues and pull requests are
-welcome.
+This is an **early open-source release**. The codebase is still being
+organized and refined, some areas may not be fully polished, and not every
+path has been tested end to end. You may encounter bugs or rough edges.
+Issues and pull requests are welcome.
 
 ## License
 
