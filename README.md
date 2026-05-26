@@ -26,7 +26,7 @@ This repository accompanies the MICCAI paper. It contains:
 - the BCER Brain planner, Cerebellum executor, Extremity tool layer, and
   Reflector recovery loop,
 - a strict tool registry with **21 MRI-domain tools** across prostate, brain, and cardiac workflows,
-- a **benchmark harness** with fault injection (8 fault types) and 4 controller arms,
+- a **benchmark harness** with 4 controller arms,
 - a **smoke benchmark** that proves install correctness without medical data.
 
 ```
@@ -105,7 +105,7 @@ See [`docs/TOOL_ENV_ANALYSIS.md`](docs/TOOL_ENV_ANALYSIS.md) for the architectur
 
 ## Benchmark
 
-The benchmark exercises one `(task, arm, fault)` cell per run.
+The benchmark exercises one `(task, arm)` cell per run.
 
 **Controller arms.** Each arm is a different planning/recovery strategy:
 
@@ -116,20 +116,13 @@ The benchmark exercises one `(task, arm, fault)` cell per run.
 | ReAct + symbolic binding | `--arm react_token` |
 | ReAct + binding + bounded reflector | `--arm react_token_reflector` |
 
-| Group | Faults | Scored by |
-| --- | --- | --- |
-| Recoverable, deterministic | `token_mutation`, `path_mutation` | ERR |
-| Recoverable, semantic | `argument_omission`, `semantic_swap`, `space_mismatch` | ERR |
-| Nonrecoverable | `missing_modality`, `scope_violation`, `timeout` | safe-halt rate |
-
-Run one task/arm/fault cell against a manifest you built locally:
+Run one task/arm cell against a manifest you built locally:
 
 ```bash
 python benchmark/benchmark_runner.py \
     --manifest benchmark/cases_manifest.jsonl \
     --task long_prostate_full \
     --arm bcer \
-    --fault none \
     --runs-root runs
 ```
 
