@@ -116,8 +116,6 @@ The benchmark exercises one `(task, arm, fault)` cell per run.
 | ReAct + symbolic binding | `--arm react_token` |
 | ReAct + binding + bounded reflector | `--arm react_token_reflector` |
 
-**Fault types.** Injected at most once per run:
-
 | Group | Faults | Scored by |
 | --- | --- | --- |
 | Recoverable, deterministic | `token_mutation`, `path_mutation` | ERR |
