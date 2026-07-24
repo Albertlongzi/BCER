@@ -64,6 +64,9 @@ done
 BRAIN_SRC="${BRAIN_SRC:-${DATA_ROOT:+${DATA_ROOT}/Brats2018/MICCAI_BraTS_2018_Data_Validation/Brats18_CBICA_AAM_1}}"
 PROSTATE_SRC="${PROSTATE_SRC:-${DATA_ROOT:+${DATA_ROOT}/fastmri_prostate_v3/subjects/sub-019/DICOMS}}"
 CARDIAC_SRC="${CARDIAC_SRC:-}"
+# Which ACDC patient to stage. The tracked placeholder dir under demo/cases/ is
+# named for patient061; changing this stages into a sibling dir instead.
+CARDIAC_PATIENT="${CARDIAC_PATIENT:-patient061}"
 
 # Fail loudly rather than probing paths the user never named.
 _missing_src=()
@@ -168,50 +171,86 @@ stage_prostate() {
 }
 
 # ---------------------------------------------------------------------------
-# CARDIAC — ACDC patient061 ED -> demo/cases/acdc_multiseq_patient061_ed
+# CARDIAC — one ACDC patient -> demo/cases/acdc_multiseq_<patient>_ed
 #
-# Expected layout (cine NIfTI; identify_sequences maps patientNNN_frameNN* to
-# the CINE sequence and excludes *_gt volumes from sequence identification):
-#   acdc_multiseq_patient061_ed/
-#     patient061_frame01_0000.nii.gz   (ED single-frame 3D cine — the CINE input)
-#     patient061_frame01_gt.nii.gz     (ED ground-truth seg; *_gt excluded from identify)
+# CARDIAC_SRC may point at any of three layouts:
+#   A. a native ACDC patient dir            .../database/training/patient061/
+#   B. a native ACDC split root             .../database/training/   (descends to
+#                                            ${CARDIAC_PATIENT})
+#   C. an nnUNet-converted task dir         .../TaskNNN_*/imagesTr_single + labelsTr
 #
-# NOTE: this is a SINGLE ED frame (3D), not the full 4D cine. The long_cardiac_full
-# chain expects a 4D cine (patient061_4d.nii.gz) which is NOT on local disk.
-# See demo/README.md "Cardiac 4D-cine gap" for the official ACDC download.
-# Only the ED frame is staged as CINE to keep sequence resolution unambiguous;
-# the ES frame (frame10) is available at the source if you want to add it.
+# Layouts A and B are what you get from the official ACDC download; C is the
+# preprocessed form. The full 4D cine is preferred when present, because
+# long_cardiac_full can then derive ED/ES phases and ejection fractions. When
+# only single phases exist, the ED frame alone is staged so that sequence
+# resolution stays unambiguous (the chain still runs, but EF-style features
+# degrade). Ground-truth volumes are staged as *_gt, which identify_sequences
+# excludes from sequence detection.
 # ---------------------------------------------------------------------------
 stage_cardiac() {
-  local dst="${CASES_DIR}/acdc_multiseq_patient061_ed"
-  local img_dir="${CARDIAC_SRC}/imagesTr_single"
-  local lbl_dir="${CARDIAC_SRC}/labelsTr"
-  log "cardiac: source = ${CARDIAC_SRC}"
-  if [[ ! -d "${img_dir}" ]]; then
-    warn "cardiac image dir not found: ${img_dir} — skipping cardiac."
+  local patient="${CARDIAC_PATIENT}"
+  local dst="${CASES_DIR}/acdc_multiseq_${patient}_ed"
+  log "cardiac: source = ${CARDIAC_SRC} (patient=${patient})"
+
+  # Resolve the layout.
+  local img_dir="" lbl_dir="" layout=""
+  if [[ -d "${CARDIAC_SRC}/imagesTr_single" ]]; then
+    img_dir="${CARDIAC_SRC}/imagesTr_single"; lbl_dir="${CARDIAC_SRC}/labelsTr"; layout="nnunet"
+  elif compgen -G "${CARDIAC_SRC}/${patient}_*.nii.gz" >/dev/null 2>&1; then
+    img_dir="${CARDIAC_SRC}"; lbl_dir="${CARDIAC_SRC}"; layout="acdc-patient"
+  elif [[ -d "${CARDIAC_SRC}/${patient}" ]]; then
+    img_dir="${CARDIAC_SRC}/${patient}"; lbl_dir="${img_dir}"; layout="acdc-root"
+  else
+    warn "cardiac: no recognized ACDC layout under ${CARDIAC_SRC} — skipping cardiac."
+    warn "cardiac: expected ${patient}_*.nii.gz, a ${patient}/ subdir, or imagesTr_single/."
     return 0
   fi
+  log "cardiac: detected layout '${layout}' (images=${img_dir})"
+
   clean_case_dir "${dst}"
   local staged=0
-  local ed="${img_dir}/patient061_frame01_0000.nii.gz"
-  if [[ -f "${ed}" ]]; then
-    cp -f "${ed}" "${dst}/patient061_frame01_0000.nii.gz"
-    log "cardiac: staged ED cine patient061_frame01_0000.nii.gz"
+
+  # Preferred input: the full 4D cine.
+  local cine4d=""
+  for cand in "${img_dir}/${patient}_4d.nii.gz" "${img_dir}/${patient}_4d_0000.nii.gz"; do
+    [[ -f "${cand}" ]] && { cine4d="${cand}"; break; }
+  done
+
+  if [[ -n "${cine4d}" ]]; then
+    cp -f "${cine4d}" "${dst}/${patient}_4d.nii.gz"
+    log "cardiac: staged 4D cine ${patient}_4d.nii.gz (full cine — ED/ES derivable)"
     staged=$((staged+1))
   else
-    warn "cardiac: ED frame not found: ${ed}"
+    # Fall back to the ED single phase, under either naming convention.
+    local ed=""
+    for cand in "${img_dir}/${patient}_frame01_0000.nii.gz" "${img_dir}/${patient}_frame01.nii.gz"; do
+      [[ -f "${cand}" ]] && { ed="${cand}"; break; }
+    done
+    if [[ -n "${ed}" ]]; then
+      cp -f "${ed}" "${dst}/$(basename "${ed}")"
+      log "cardiac: staged ED cine $(basename "${ed}")"
+      staged=$((staged+1))
+    else
+      warn "cardiac: neither ${patient}_4d.nii.gz nor ${patient}_frame01*.nii.gz found under ${img_dir}"
+    fi
   fi
-  local gt="${lbl_dir}/patient061_frame01.nii.gz"
-  if [[ -f "${gt}" ]]; then
-    # rename to *_gt so identify_sequences excludes it from sequence detection
-    cp -f "${gt}" "${dst}/patient061_frame01_gt.nii.gz"
-    log "cardiac: staged GT seg patient061_frame01_gt.nii.gz (excluded from identify)"
+
+  # Ground truth for the ED phase (optional). In the nnUNet layout the label has
+  # no _gt suffix, so add one; in the native layout it already has it.
+  local gt=""
+  for cand in "${lbl_dir}/${patient}_frame01_gt.nii.gz" "${lbl_dir}/${patient}_frame01.nii.gz"; do
+    [[ -f "${cand}" && "${cand}" != "${img_dir}/${patient}_frame01.nii.gz" ]] && { gt="${cand}"; break; }
+  done
+  if [[ -n "${gt}" ]]; then
+    cp -f "${gt}" "${dst}/${patient}_frame01_gt.nii.gz"
+    log "cardiac: staged GT seg ${patient}_frame01_gt.nii.gz (excluded from identify)"
     staged=$((staged+1))
   else
-    warn "cardiac: GT seg not found: ${gt} (optional)"
+    warn "cardiac: ED ground-truth seg not found under ${lbl_dir} (optional)"
   fi
+
   log "cardiac: staged ${staged} file(s) -> ${dst}"
-  warn "cardiac uses a SINGLE ED frame (3D), not 4D cine — see demo/README.md."
+  [[ -n "${cine4d}" ]] || warn "cardiac: single ED phase only (3D), not 4D cine — EF-style features degrade."
 }
 
 # ---------------------------------------------------------------------------

@@ -54,8 +54,8 @@ assets/
 | **brats_mri_segmentation** | `brats_mri_segmentation` (brain tumor seg) | https://huggingface.co/MONAI/brats_mri_segmentation | `python -m monai.bundle download "brats_mri_segmentation" --bundle_dir assets/models`<br>fallback: `huggingface-cli download MONAI/brats_mri_segmentation --local-dir assets/models/brats_mri_segmentation` | ~38 MB | Apache-2.0 | `assets/models/brats_mri_segmentation/` |
 | **prostate_mri_lesion_seg** (app) | `detect_lesion_candidates` | https://github.com/Project-MONAI/research-contributions (subdir `prostate-mri-lesion-seg`) | `git clone --depth 1 https://github.com/Project-MONAI/research-contributions.git` then copy `prostate-mri-lesion-seg/prostate_mri_lesion_seg_app/` | small | **NON-COMMERCIAL** (NCI/NVIDIA) | `assets/models/prostate_mri_lesion_seg/prostate_mri_lesion_seg_app/` |
 | **prostate_mri_lesion_seg** (weights) | `detect_lesion_candidates` | https://drive.google.com/drive/folders/1EpjrlzEdV7CcaCYqGTIEzOapamP4Ag6M | `gdown --folder https://drive.google.com/drive/folders/1EpjrlzEdV7CcaCYqGTIEzOapamP4Ag6M -O assets/models/prostate_mri_lesion_seg/weight` | ~895 MB (7 files) | **NON-COMMERCIAL** (NCI/NVIDIA) | `assets/models/prostate_mri_lesion_seg/weight/` |
-| **cardiac Task900_ACDC_Phys** (collaborator) | `cardiac_cine_segmentation` | SURFdrive link inside `/common/longz2/cmr_reverse/download_nnunet_weights.sh` | `RESULTS_FOLDER=assets/models/cardiac_nnunet/results bash /common/longz2/cmr_reverse/download_nnunet_weights.sh` | ~n/a | Research-use (collaborator; **may be PRIVATE**) | `assets/models/cardiac_nnunet/results/nnUNet/2d/` |
-| **cardiac Task027_ACDC** (public fallback) | `cardiac_cine_segmentation` | https://zenodo.org/records/3734294 (DOI 10.5281/zenodo.3734294, `Task027_ACDC.zip`) | `curl -L -o Task027_ACDC.zip "https://zenodo.org/records/3734294/files/Task027_ACDC.zip?download=1"` then unzip into `assets/models/cardiac_nnunet/results/` | ~1.8 GB | **CC BY-NC 4.0** | `assets/models/cardiac_nnunet/results/` |
+| **cardiac Task900_ACDC_Phys** (collaborator) | `cardiac_cine_segmentation` | SURFdrive link inside a collaborator-provided `download_nnunet_weights.sh` | `CMR_REVERSE_ROOT=/dir/holding/that/script CARDIAC_SOURCE=task900 scripts/download_assets.sh --only cardiac` | ~n/a | Research-use (collaborator; **may be PRIVATE**) | `assets/models/cardiac_nnunet/results/nnUNet/2d/` |
+| **cardiac Task027_ACDC** (public fallback) | `cardiac_cine_segmentation` | https://zenodo.org/records/3734294 (DOI 10.5281/zenodo.3734294, `Task027_ACDC.zip`) | `curl -L -o Task027_ACDC.zip "https://zenodo.org/records/3734294/files/Task027_ACDC.zip?download=1"` then unzip into `assets/models/cardiac_nnunet/results/nnUNet/` | ~1.8 GB | **CC BY-NC 4.0** | `assets/models/cardiac_nnunet/results/nnUNet/2d/` |
 
 ---
 
@@ -65,9 +65,13 @@ The framework's cardiac backend is **not finalized here** — the separate
 cardiac-seg agent chooses the exact backend/weights. Two options exist:
 
 - **Task900_ACDC_Phys** — collaborator-trained model (MICCAI 2025 *Reverse
-  Imaging*, TU Delft / Tao lab). Fetched by the helper
-  `/common/longz2/cmr_reverse/download_nnunet_weights.sh` (a SURFdrive link).
-  **This may be private / require collaborator access.**
+  Imaging*, TU Delft / Tao lab). Fetched by a collaborator-provided
+  `download_nnunet_weights.sh` (a SURFdrive link); point `CMR_REVERSE_ROOT` at
+  the directory holding that script. **This may be private / require
+  collaborator access.** It is the default `MRI_AGENT_CARDIAC_TASK`, so if you
+  install the public fallback instead you must also set
+  `MRI_AGENT_CARDIAC_TASK=Task027_ACDC` and
+  `MRI_AGENT_CARDIAC_TRAINER=nnUNetTrainerV2`.
 - **Task027_ACDC** — the reliable **public** fallback (Isensee et al., nnU-Net
   ACDC baseline), on Zenodo under CC BY-NC 4.0.
 

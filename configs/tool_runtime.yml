@@ -19,6 +19,12 @@ tiers:
   inference:
     conda_env: bcer-inference
     timeout_seconds: 3600
+  # segment_cardiac_cine runs on the vendored nnUNet V1 fork, whose deps
+  # (batchgenerators, MedPy, numpy<2) conflict with the MONAI inference tier.
+  # Provision with: conda env create -f envs/cardiac.yml
+  cardiac:
+    conda_env: bcer-cardiac-seg
+    timeout_seconds: 3600
   recon:
     conda_env: bcer-recon
     timeout_seconds: 1800
@@ -46,8 +52,9 @@ tool_tiers:
   inference:
     - segment_prostate
     - brats_mri_segmentation
-    - segment_cardiac_cine
     - detect_lesion_candidates
+  cardiac:
+    - segment_cardiac_cine
   recon:
     - reconstruct_grappa
   radiomics:

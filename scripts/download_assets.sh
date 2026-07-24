@@ -34,13 +34,17 @@ LESION_WEIGHT_DIR="${LESION_DIR}/weight"
 CARDIAC_DIR="${MODELS_DIR}/cardiac_nnunet"
 CARDIAC_RESULTS_DIR="${CARDIAC_DIR}/results"
 
-# ---- known local copies (verified on this HPC) ------------------------------
-MEDGEMMA_ROOT="${MEDGEMMA_ROOT:-/common/longz2/medgemma}"
-CMR_REVERSE_ROOT="${CMR_REVERSE_ROOT:-/common/longz2/cmr_reverse}"
+# ---- optional pre-existing local copies -------------------------------------
+# Only used by --from-local, and only if you point them somewhere. There are no
+# built-in paths: MEDGEMMA_ROOT should hold models/prostate_mri_anatomy and
+# prostate_mri_lesion_seg/{weight,scripts/...}; CMR_REVERSE_ROOT should hold
+# download_nnunet_weights.sh. Everything works without them over the network.
+MEDGEMMA_ROOT="${MEDGEMMA_ROOT:-}"
+CMR_REVERSE_ROOT="${CMR_REVERSE_ROOT:-}"
 
-LOCAL_ANATOMY="${MEDGEMMA_ROOT}/models/prostate_mri_anatomy"
-LOCAL_LESION_APP="${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/scripts/research-contributions/prostate-mri-lesion-seg/prostate_mri_lesion_seg_app"
-LOCAL_LESION_WEIGHT="${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/weight"
+LOCAL_ANATOMY="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/models/prostate_mri_anatomy}"
+LOCAL_LESION_APP="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/scripts/research-contributions/prostate-mri-lesion-seg/prostate_mri_lesion_seg_app}"
+LOCAL_LESION_WEIGHT="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/weight}"
 
 # ---- remote sources ---------------------------------------------------------
 LESION_GDRIVE_FOLDER="https://drive.google.com/drive/folders/1EpjrlzEdV7CcaCYqGTIEzOapamP4Ag6M"
@@ -73,22 +77,25 @@ Options:
                      lesion                       -> prostate_mri_lesion_seg
                      cardiac                      -> cardiac_nnunet
                    Default: all of the above.
-  --from-local     Copy from known local HPC copies under \$MEDGEMMA_ROOT when
-                   they exist; fall back to network download otherwise.
+  --from-local     Reuse copies you already have under \$MEDGEMMA_ROOT instead of
+                   downloading; falls back to the network for anything missing.
+                   Requires MEDGEMMA_ROOT to be set (there is no default).
   --symlink        In --from-local mode, symlink instead of copying (saves disk).
   --force          Re-fetch even if the target already looks populated.
   -h, --help       Show this help.
 
-Environment:
-  MEDGEMMA_ROOT        Default: /common/longz2/medgemma  (local model copies)
-  CMR_REVERSE_ROOT     Default: /common/longz2/cmr_reverse (cardiac helper)
+Environment (all optional; no built-in paths):
+  MEDGEMMA_ROOT        Root of existing local copies, used only by --from-local.
+                       Expected inside it: models/prostate_mri_anatomy and
+                       prostate_mri_lesion_seg/{weight,scripts/research-contributions/...}
+  CMR_REVERSE_ROOT     Directory containing download_nnunet_weights.sh, for the
+                       collaborator cardiac Task900 weights (CARDIAC_SOURCE=task900).
   CARDIAC_SOURCE       auto (default; print options only) | task027 | task900
 
 Examples:
   $0                              # download everything from the network
-  $0 --from-local                 # prefer local copies, download the rest
   $0 --only prostate,brats        # just the two MONAI bundles
-  $0 --only lesion --from-local   # lesion app+weights from local copy
+  MEDGEMMA_ROOT=/my/models $0 --from-local --symlink   # reuse local copies
   CARDIAC_SOURCE=task027 $0 --only cardiac   # fetch public ACDC fallback
 
 NOTE: prostate_mri_lesion_seg and the cardiac ACDC weights are NON-COMMERCIAL /
@@ -102,12 +109,25 @@ while [ $# -gt 0 ]; do
     --only)        ONLY="${2:-}"; shift 2 ;;
     --only=*)      ONLY="${1#*=}"; shift ;;
     --from-local)  FROM_LOCAL=1; shift ;;
+    --medgemma-root)   MEDGEMMA_ROOT="${2:-}"; shift 2 ;;
+    --medgemma-root=*) MEDGEMMA_ROOT="${1#*=}"; shift ;;
     --symlink)     USE_SYMLINK=1; shift ;;
     --force)       FORCE=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     *)             err "Unknown argument: $1"; usage; exit 2 ;;
   esac
 done
+
+# Re-derive the local copy paths now that --medgemma-root may have changed the root.
+LOCAL_ANATOMY="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/models/prostate_mri_anatomy}"
+LOCAL_LESION_APP="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/scripts/research-contributions/prostate-mri-lesion-seg/prostate_mri_lesion_seg_app}"
+LOCAL_LESION_WEIGHT="${MEDGEMMA_ROOT:+${MEDGEMMA_ROOT}/prostate_mri_lesion_seg/weight}"
+
+if [ "${FROM_LOCAL}" -eq 1 ] && [ -z "${MEDGEMMA_ROOT}" ]; then
+  warn "--from-local given but MEDGEMMA_ROOT is not set; nothing can be reused locally."
+  warn "Set MEDGEMMA_ROOT=/path/to/existing/models (or pass --medgemma-root). Falling back to network downloads."
+  FROM_LOCAL=0
+fi
 
 want() {
   # want <name> -> 0 if selected (ONLY empty means everything)
@@ -298,6 +318,13 @@ setup_cardiac() {
 
   case "${CARDIAC_SOURCE}" in
     task900)
+      if [ -z "${CMR_REVERSE_ROOT}" ]; then
+        warn "CARDIAC_SOURCE=task900 needs CMR_REVERSE_ROOT to point at the directory"
+        warn "containing download_nnunet_weights.sh (collaborator-provided, may be private)."
+        warn "For the public weights use CARDIAC_SOURCE=task027."
+        record "cardiac_nnunet: UNRESOLVED (CMR_REVERSE_ROOT unset)"
+        return 0
+      fi
       local helper="${CMR_REVERSE_ROOT}/download_nnunet_weights.sh"
       if [ -f "${helper}" ]; then
         info "cardiac: running collaborator helper ${helper}"

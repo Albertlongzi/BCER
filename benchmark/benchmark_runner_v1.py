@@ -1506,12 +1506,25 @@ def run_track1_benchmark(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     root = project_root()
-    ap = argparse.ArgumentParser(description="Run Track 1 benchmark ablations (BCER robustness study)")
+    ap = argparse.ArgumentParser(
+        description="Run Track 1 benchmark ablations (BCER robustness study).",
+        epilog=(
+            "This is the Track 1 ablation entry point, and it is NOT the runner used "
+            "for the paper's per-task arms -- for those use benchmark/benchmark_runner.py. "
+            "--suite expects a Track 1 suite object with 'llm_backends' (including a "
+            "'qwen_local_default' backend), 'cases' and 'ablation_modes' keys. Note that "
+            "benchmark/benchmark_suite.template.json is a DIFFERENT, task-oriented schema "
+            "and cannot be passed here."
+        ),
+    )
     ap.add_argument(
         "--suite",
         type=str,
-        default=str(root / "benchmark" / "benchmark_suite.json"),
-        help="Path to benchmark_suite.json",
+        required=True,
+        help=(
+            "Path to a Track 1 benchmark suite JSON (keys: llm_backends, cases, "
+            "ablation_modes). No default: the repo ships no Track 1 suite."
+        ),
     )
     ap.add_argument(
         "--output",
@@ -1559,6 +1572,21 @@ def main() -> None:
     args = build_arg_parser().parse_args()
 
     suite_path = Path(args.suite).expanduser().resolve()
+    if not suite_path.exists():
+        raise SystemExit(f"benchmark suite not found: {suite_path}")
+    # Fail with an actionable message rather than deep inside the run when the
+    # caller passes a task-oriented suite (e.g. benchmark_suite.template.json).
+    try:
+        probe = json.loads(suite_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise SystemExit(f"benchmark suite is not valid JSON: {suite_path} ({exc})") from exc
+    missing = [k for k in ("llm_backends", "cases", "ablation_modes") if k not in (probe or {})]
+    if missing:
+        raise SystemExit(
+            f"{suite_path} is not a Track 1 ablation suite (missing: {', '.join(missing)}). "
+            "For the paper's per-task arms use benchmark/benchmark_runner.py instead."
+        )
+
     output_path = Path(args.output).expanduser().resolve()
     workspace_root = Path(args.workspace_root).expanduser().resolve()
     runs_root = Path(args.runs_root).expanduser().resolve()

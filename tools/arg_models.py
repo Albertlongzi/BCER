@@ -114,6 +114,8 @@ class RepairConfig:
     cardiac_backend_root: Path
     cardiac_nnunet_python: Path
     cardiac_results_folder: Path
+    cardiac_task: str
+    cardiac_trainer: str
 
     @staticmethod
     def from_env(repo_root: Path) -> "RepairConfig":
@@ -158,6 +160,13 @@ class RepairConfig:
                 str(repo_root / "assets" / "models" / "cardiac_nnunet" / "results"),
             )
         ).expanduser().resolve()
+        # Task/trainer defaults must match tools/cardiac_cine_segmentation.py, which
+        # reads the same two variables. Users who installed the public Task027_ACDC
+        # fallback instead of the collaborator Task900 weights set both.
+        cardiac_task = str(os.getenv("MRI_AGENT_CARDIAC_TASK") or "Task900_ACDC_Phys").strip()
+        cardiac_trainer = str(
+            os.getenv("MRI_AGENT_CARDIAC_TRAINER") or "nnUNetTrainerV2_InvGreAug"
+        ).strip()
         return RepairConfig(
             model_registry_path=model_registry,
             prostate_bundle_dir=prostate_bundle,
@@ -166,6 +175,8 @@ class RepairConfig:
             cardiac_backend_root=cardiac_root,
             cardiac_nnunet_python=cardiac_nnunet_python,
             cardiac_results_folder=cardiac_results,
+            cardiac_task=cardiac_task,
+            cardiac_trainer=cardiac_trainer,
         )
 
 
@@ -765,19 +776,39 @@ class SegmentCardiacCineArgs(ToolArgsBase):
                 task_raw = model_raw
                 model_raw = ""
 
-        if (not task_raw) or task_raw.lower() in {"acdc", "acdc_phys", "task900", "task900_acdc", "900"}:
-            self.task_name = "Task900_ACDC_Phys"
+        # Fall back to the CONFIGURED task (MRI_AGENT_CARDIAC_TASK) rather than a
+        # literal, so a deployment pointed at the public Task027_ACDC weights is
+        # not silently rewritten back to the collaborator-only Task900.
+        default_task = ctx.config.cardiac_task or "Task900_ACDC_Phys"
+
+        def _task_num(value: str) -> Optional[int]:
+            m = re.match(r"task0*(\d+)", str(value or "").strip().lower())
+            return int(m.group(1)) if m else None
+
+        default_num = _task_num(default_task)
+        task_low = task_raw.lower()
+        if task_low in {"", "acdc", "acdc_phys"}:
+            self.task_name = default_task
         elif task_raw.isdigit():
             tid = int(task_raw)
-            self.task_name = "Task900_ACDC_Phys" if tid == 900 else f"Task{tid:03d}"
-        elif task_raw.lower().startswith("task"):
-            self.task_name = task_raw
+            # A bare id matching the configured task gets that task's full
+            # directory name; anything else is taken at face value.
+            self.task_name = default_task if tid == default_num else f"Task{tid:03d}"
+        elif task_low.startswith("task"):
+            # LLMs often emit a truncated "Task900" for "Task900_ACDC_Phys";
+            # expand it when it identifies the configured task. Otherwise keep it
+            # but restore the capital T that nnUNet's directory names use.
+            self.task_name = (
+                default_task
+                if _task_num(task_low) == default_num
+                else re.sub(r"^task", "Task", task_raw, flags=re.IGNORECASE)
+            )
         else:
-            # nnUNet v1 predict_simple expects numeric id or "TaskXXX_*".
-            self.task_name = "Task900_ACDC_Phys"
+            # nnUNet v1 predict_simple expects a numeric id or "TaskXXX_*".
+            self.task_name = default_task
 
         if "trainer_class_name" not in fields_set:
-            self.trainer_class_name = "nnUNetTrainerV2_InvGreAug"
+            self.trainer_class_name = ctx.config.cardiac_trainer or "nnUNetTrainerV2_InvGreAug"
 
         model_norm = model_raw.lower()
         if model_norm in model_allowed:

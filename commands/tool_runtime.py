@@ -66,8 +66,14 @@ DEFAULT_TIER_TOOLS: Dict[str, List[str]] = {
     "inference": [
         "segment_prostate",
         "brats_mri_segmentation",
-        "segment_cardiac_cine",
         "detect_lesion_candidates",
+    ],
+    # segment_cardiac_cine shells out to the vendored nnUNet V1 fork under
+    # external/nnunet_phys_seg, whose dependency set (batchgenerators, MedPy,
+    # numpy<2) conflicts with the MONAI-based inference tier -- hence its own
+    # tier, provisioned by envs/cardiac.yml.
+    "cardiac": [
+        "segment_cardiac_cine",
     ],
     "recon": [
         "reconstruct_grappa",
@@ -76,6 +82,18 @@ DEFAULT_TIER_TOOLS: Dict[str, List[str]] = {
         "extract_roi_features",
     ],
 }
+
+# Conda env per tier when the config file does not name one explicitly.
+DEFAULT_TIER_ENVS: Dict[str, str] = {
+    "base": "bcer-base",
+    "inference": "bcer-inference",
+    "cardiac": "bcer-cardiac-seg",
+    "recon": "bcer-recon",
+    "radiomics": "bcer-radiomics",
+}
+
+# Tiers that "auto" dispatch mode sends to a subprocess. `base` stays in-process.
+SUBPROCESS_TIERS: frozenset[str] = frozenset({"inference", "cardiac", "recon", "radiomics"})
 
 
 def project_root() -> Path:
@@ -122,11 +140,17 @@ def load_tool_runtime_config(config_path: str | Path | None = None) -> ToolRunti
 
     tier_defs = cfg.get("tiers") if isinstance(cfg.get("tiers"), dict) else {}
     tiers: Dict[str, RuntimeTier] = {}
-    for name in ("base", "inference", "recon", "radiomics"):
+    # Known tiers plus any extra ones the config declares, so a deployment can
+    # add a tier without editing this module.
+    tier_names = list(DEFAULT_TIER_ENVS)
+    for extra in tier_defs if isinstance(tier_defs, dict) else {}:
+        if str(extra) not in tier_names:
+            tier_names.append(str(extra))
+    for name in tier_names:
         raw = tier_defs.get(name, {}) if isinstance(tier_defs, dict) else {}
         if not isinstance(raw, dict):
             raw = {}
-        env_name = str(raw.get("conda_env") or f"bcer-{name}").strip()
+        env_name = str(raw.get("conda_env") or DEFAULT_TIER_ENVS.get(name) or f"bcer-{name}").strip()
         tiers[name] = RuntimeTier(
             name=name,
             conda_env=env_name,
@@ -158,7 +182,7 @@ def should_dispatch_subprocess(tool_name: str, cfg: ToolRuntimeConfig) -> bool:
         return cfg.tier_for_tool(tool_name) is not None
     if mode == "auto":
         tier = cfg.tool_tiers.get(tool_name)
-        return tier in {"inference", "recon", "radiomics"}
+        return tier in SUBPROCESS_TIERS
     return False
 
 
