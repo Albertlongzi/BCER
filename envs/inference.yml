@@ -16,5 +16,9 @@ dependencies:
   - pytorch
   - pytorch-cuda=12.1
   - pip:
-      - monai>=1.3
+      # Cap below 1.6: monai>=1.6 requires torch>=2.8, so pip discards the conda
+      # pytorch/pytorch-cuda=12.1 build above and pulls a second CUDA stack
+      # (torch+cu130 plus the nvidia-*-cu13 wheels), roughly doubling the env.
+      # The live runs used monai 1.5.x.
+      - monai>=1.3,<1.6
       - scikit-image>=0.21

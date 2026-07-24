@@ -8,6 +8,11 @@ dependencies:
   - scipy
   - h5py
   - nibabel
+  # pygrappa imports tqdm and scikit-image at module load; reconstruct_grappa
+  # prefers SimpleITK for writing (the nibabel fallback loses voxel spacing).
+  - scikit-image
+  - simpleitk
+  - tqdm
   - pyyaml
   - jsonschema
   - pip:

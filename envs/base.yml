@@ -12,6 +12,8 @@ dependencies:
   - scipy>=1.10
   - pyyaml
   - jsonschema
+  # compare_nifti_slices and generate_qa_snapshot both use matplotlib (Agg).
+  - matplotlib-base
   - pip:
       - openai>=1.0
       - anthropic>=0.25

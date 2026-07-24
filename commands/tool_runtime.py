@@ -211,6 +211,12 @@ def _child_environment(cfg: ToolRuntimeConfig, tier: RuntimeTier) -> Dict[str, s
     env.setdefault("PYTHONPATH", str(cfg.project_root))
     if str(cfg.project_root) not in env["PYTHONPATH"].split(os.pathsep):
         env["PYTHONPATH"] = str(cfg.project_root) + os.pathsep + env["PYTHONPATH"]
+    # A populated ~/.local/lib/pythonX.Y/site-packages sits ahead of the tier
+    # env's own site-packages and silently overrides its pins -- observed here
+    # with bcer-cardiac-seg, which is built for numpy<2 but imported numpy 2.x
+    # from user site. Tier isolation is the entire point of subprocess dispatch,
+    # so drop user site in the child.
+    env["PYTHONNOUSERSITE"] = "1"
 
     # Project-local defaults for model/checkpoint assets. Users may override, but
     # public release docs should point them back under assets/.

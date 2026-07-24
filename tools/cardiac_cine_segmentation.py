@@ -354,9 +354,14 @@ def _run_nnunet_predict(
     # when backend_root points at a full training tree).
     raw_base = backend_root / "nnunetdata" / "raw"
     preprocessed = backend_root / "nnunetdata" / "preprocessed"
-    if not results_folder.exists():
+    # An existing-but-empty results dir is the common case after a fresh clone
+    # (assets/models/cardiac_nnunet/results is created by download_assets.sh
+    # before the weights land), and it would otherwise surface as an opaque
+    # nnUNet "model output folder not found" assertion deep in the child.
+    if not results_folder.exists() or not any(results_folder.iterdir()):
         raise FileNotFoundError(
-            "Missing nnUNet RESULTS_FOLDER (download the cardiac weights first): "
+            "Missing or empty nnUNet RESULTS_FOLDER (download the cardiac weights "
+            "first -- see docs/ASSETS.md): "
             f"{results_folder}"
         )
     if not nnunet_python.exists():
@@ -403,13 +408,26 @@ def _run_nnunet_predict(
     env["RESULTS_FOLDER"] = str(results_folder)
     # Import the vendored, Apache-2.0 nnUNet backend from external/nnunet_phys_seg.
     nnunet_src = _vendored_backend_src()
+    run_cwd = backend_root if backend_root.exists() else _repo_root()
     if nnunet_src.exists():
         prev = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{nnunet_src}:{prev}" if prev else str(nnunet_src)
+        # Provenance guard. Under `python -m`, sys.path[0] is the child's cwd,
+        # which therefore beats the PYTHONPATH entry above. backend_root is
+        # meant to be overridable to a full nnUNet *training* tree (we read
+        # nnunetdata/{raw,preprocessed} from it), and such a tree contains its
+        # own nnunet/ package -- which would then silently shadow the vendored
+        # fork. Run from the vendored dir so the code that executes is always
+        # the one we ship; raw/preprocessed still come from backend_root.
+        run_cwd = nnunet_src
+        # A populated ~/.local/lib/pythonX.Y/site-packages sits ahead of the
+        # interpreter's own site-packages and overrides env pins (e.g. the
+        # numpy<2 that envs/cardiac.yml exists to enforce).
+        env["PYTHONNOUSERSITE"] = "1"
 
     proc = subprocess.run(
         cmd,
-        cwd=str(backend_root if backend_root.exists() else _repo_root()),
+        cwd=str(run_cwd),
         env=env,
         capture_output=True,
         text=True,

@@ -88,10 +88,24 @@ heavier tool tiers are optional — install only what you plan to use.
 
 | Tier | Env file | Adds | When to install |
 | --- | --- | --- | --- |
-| Base | `envs/base.yml` | pydicom, SimpleITK, nibabel | Always |
-| Inference | `envs/inference.yml` | torch, MONAI | To run segmentation tools |
+| Base | `envs/base.yml` | pydicom, SimpleITK, nibabel, matplotlib | Always |
+| Inference | `envs/inference.yml` | torch, MONAI | To run prostate/brain segmentation |
+| Cardiac | `envs/cardiac.yml` | torch, batchgenerators, MedPy | To run `segment_cardiac_cine` |
 | Reconstruction | `envs/recon.yml` | pygrappa, h5py | To process raw cardiac k-space |
 | Radiomics | `envs/radiomics.yml` | pyradiomics, scikit-image | For ROI feature extraction |
+
+The cardiac tier additionally needs the vendored backend installed into it:
+
+```bash
+conda env create -f envs/cardiac.yml
+conda run -n bcer-cardiac-seg pip install -e external/nnunet_phys_seg
+```
+
+> The GPU tiers (`inference.yml`, `cardiac.yml`) need conda's libmamba solver,
+> the default since conda 23.10. On conda 4.x's classic solver these solves run
+> for over an hour without converging — either
+> `conda install -n base conda-libmamba-solver`, or create the env with
+> `micromamba create -f envs/<tier>.yml`.
 
 Tool dispatch is controlled by `BCER_TOOL_DISPATCH`:
 
