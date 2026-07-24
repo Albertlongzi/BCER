@@ -5,21 +5,9 @@
   "request_type": "full_pipeline",
   "notes": [
     "Baseline cardiac full-pipeline skeleton.",
-    "Supports both DICOM/NIfTI cine cases and raw k-space H5 cases (reconstruct_grappa_005 is optional)."
+    "Supports both DICOM/NIfTI cine cases and raw k-space H5 cases; for H5 cases the planner patch injects a reconstruct_grappa step between identify_sequences and segmentation."
   ],
   "nodes": [
-    {
-      "node_id": "reconstruct_grappa_005",
-      "tool_name": "reconstruct_grappa",
-      "stage": "reconstruct",
-      "arguments": {
-        "h5_path": "@case.file",
-        "output_subdir": "reconstruction"
-      },
-      "required": false,
-      "depends_on": [],
-      "label": "Reconstruct cardiac cine from raw k-space H5 (optional, H5 cases only)"
-    },
     {
       "node_id": "identify_sequences_001",
       "tool_name": "identify_sequences",

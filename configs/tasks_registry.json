@@ -419,6 +419,83 @@
         }
       }
     },
+    "long_brain_full": {
+      "domain": ["brain"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "required_modalities": {
+        "brain": { "all_of": ["T1", "T1c", "T2", "FLAIR"] }
+      },
+      "goal_template": "Task: long_brain_full. Requested workflow type: full_pipeline. Domain: {domain}. Case ID: {case_id}. Execute identify->(register T2,FLAIR->T1c if not already co-registered)->brats-segment->features->grade-classify->report using T1/T1c/T2/FLAIR. Case root: {case_root}.",
+      "notoken_input_aliases": {
+        "brain": ["t1_nifti", "t1c_nifti", "t2_nifti", "flair_nifti"]
+      },
+      "_note_registration": "register_to_reference is deliberately NOT a required stage: BraTS-style inputs arrive already co-registered at 1x1x1 mm, so a correct plan skips it. Scoring keys off the segmentation/feature/grade/report stages, which are mandatory regardless of input geometry.",
+      "success_criteria": {
+        "all": [
+          { "type": "tool_success", "tool": "identify_sequences" },
+          { "type": "tool_success", "tool": "brats_mri_segmentation" },
+          { "type": "tool_success", "tool": "extract_roi_features" },
+          { "type": "tool_success", "tool": "classify_brain_glioma_grade" },
+          { "type": "tool_success", "tool": "generate_report" }
+        ]
+      },
+      "required_artifacts": [
+        { "id": "brain_seg", "tool": "brats_mri_segmentation", "data_key": "seg_path", "must_exist": true },
+        { "id": "brain_wt", "tool": "brats_mri_segmentation", "data_key": "wt_mask_path", "must_exist": true },
+        { "id": "brain_features", "tool": "extract_roi_features", "data_key": "feature_table_path", "must_exist": true },
+        { "id": "brain_grade", "tool": "classify_brain_glioma_grade", "data_key": "classification_path", "must_exist": true },
+        { "id": "report_json", "tool": "generate_report", "data_key": "report_json_path", "must_exist": true }
+      ],
+      "required_stage_success": ["identify_sequences", "brats_mri_segmentation", "extract_roi_features", "classify_brain_glioma_grade", "generate_report"],
+      "invariants": [
+        { "id": "seg_exists", "type": "path_exists", "tool": "brats_mri_segmentation", "data_key": "seg_path" },
+        { "id": "seg_non_empty", "type": "nifti_nonempty", "tool": "brats_mri_segmentation", "data_key": "seg_path" },
+        { "id": "wt_non_empty", "type": "nifti_nonempty", "tool": "brats_mri_segmentation", "data_key": "wt_mask_path" },
+        {
+          "id": "seg_wt_affine_consistent",
+          "type": "nifti_affine_match",
+          "lhs": { "tool": "brats_mri_segmentation", "data_key": "seg_path" },
+          "rhs": { "tool": "brats_mri_segmentation", "data_key": "wt_mask_path" }
+        },
+        { "id": "brain_features_non_empty", "type": "csv_non_empty", "tool": "extract_roi_features", "data_key": "feature_table_path", "min_rows": 1 },
+        { "id": "brain_grade_non_empty", "type": "json_field_non_empty", "tool": "classify_brain_glioma_grade", "data_key": "classification_path", "json_field": "predicted_grade" },
+        { "id": "report_non_empty", "type": "json_non_empty", "tool": "generate_report", "data_key": "report_json_path" }
+      ],
+      "fault_profiles": {
+        "token_mutation": {
+          "enabled": true,
+          "token_pairs": [
+            ["@runtime.case_state_path", "@state.path"],
+            ["@seq.T2w", "@seq.T2"],
+            ["@case.input", "@case.root"]
+          ]
+        },
+        "path_mutation": {
+          "enabled": true,
+          "modes": ["in_root_semantic", "missing", "scope_escape"]
+        },
+        "argument_omission": {
+          "enabled": true,
+          "omit_keys": ["t1_path", "t1c_path", "t2_path", "flair_path"]
+        },
+        "semantic_swap": {
+          "enabled": true,
+          "swap_pairs": [["t1c_path", "flair_path"]],
+          "min_impact": 90
+        },
+        "space_mismatch": {
+          "enabled": true,
+          "mutate_interpolation": true
+        },
+        "missing_modality": {
+          "enabled": true
+        },
+        "scope_violation": {
+          "enabled": true
+        }
+      }
+    },
     "short_recon_grappa": {
       "domain": ["cardiac"],
       "toolchain": "short",

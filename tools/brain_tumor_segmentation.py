@@ -23,6 +23,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from shutil import move
@@ -311,7 +312,12 @@ def brats_mri_segmentation(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, 
         dep_error = e
 
     t1c, t1, t2, flair = _resolve_paths(args)
-    bundle_root = Path(args.get("bundle_root") or DEFAULT_BUNDLE_ROOT).expanduser().resolve()
+    # Bundle resolution order: explicit arg -> MRI_AGENT_BRATS_BUNDLE_DIR env
+    # override (set by commands/tool_runtime.py for subprocess dispatch) ->
+    # repo default. A missing bundle still triggers the heuristic fallback
+    # below, so absent deps/weights remain non-fatal.
+    bundle_root_arg = args.get("bundle_root") or os.environ.get("MRI_AGENT_BRATS_BUNDLE_DIR")
+    bundle_root = Path(bundle_root_arg or DEFAULT_BUNDLE_ROOT).expanduser().resolve()
     device = str(args.get("device") or "auto").lower()
 
     output_subdir = args.get("output_subdir") or "brats_mri_segmentation"

@@ -33,7 +33,6 @@ from tools.arg_models import repair_tool_args
 from tools.dicom_ingest import build_tools as build_dicom_tools
 from tools.roi_features import build_tool as build_feature_tool
 from tools.prostate_lesion_candidates import build_tool as build_lesion_candidates_tool
-from tools.prostate_distortion_correction import build_tool as build_prostate_distortion_tool
 from tools.vlm_evidence import build_tool as build_package_vlm_evidence_tool
 from tools.report_generation import build_tool as build_report_tool
 from tools.registration import build_tool as build_registration_tool
@@ -83,7 +82,6 @@ def build_registry(*, enable_sandbox_exec: bool = True) -> ToolRegistry:
     reg.register(build_cardiac_cine_classification_tool())
     reg.register(build_feature_tool())
     reg.register(build_lesion_candidates_tool())
-    reg.register(build_prostate_distortion_tool())
     reg.register(build_package_vlm_evidence_tool())
     reg.register(build_report_tool())
     reg.register(build_bm3d_denoise_tool())
@@ -1193,11 +1191,6 @@ def run_agent_loop(
                 if data.get(k):
                     out[k] = data.get(k)
 
-        elif tool_name == "correct_prostate_distortion":
-            for k in ("out_dir", "summary_json_path", "num_pred_npz", "num_panel_png", "num_slice_png"):
-                if data.get(k) is not None:
-                    out[k] = data.get(k)
-
         elif tool_name == "package_vlm_evidence":
             for k in ("vlm_evidence_path",):
                 if data.get(k):
@@ -1545,7 +1538,6 @@ def run_agent_loop(
                 "segment_cardiac_cine": "segment",
                 "classify_cardiac_cine_disease": "report",
                 "extract_roi_features": "extract",
-                "correct_prostate_distortion": "register",
                 "package_vlm_evidence": "report",
                 "generate_report": "report",
             }

@@ -103,15 +103,10 @@ def _default_external_model_roots() -> List[Path]:
         _push(cfg.prostate_bundle_dir)
         _push(cfg.lesion_weights_dir)
         _push(cfg.brain_bundle_dir)
-        _push(cfg.cardiac_cmr_reverse_root)
+        _push(cfg.cardiac_backend_root)
         _push(cfg.cardiac_results_folder)
         _push(cfg.cardiac_nnunet_python)
         _push(Path(cfg.cardiac_nnunet_python).expanduser().resolve().parent)
-        _push(cfg.distortion_repo_root)
-        _push(cfg.distortion_diff_ckpt)
-        _push(cfg.distortion_cnn_ckpt)
-        for p in (cfg.distortion_test_roots or []):
-            _push(p)
     except Exception:
         pass
     return out
@@ -377,6 +372,7 @@ class _CaseScopeGuard:
         "weights_dir",
         "nnunet_python",
         "results_folder",
+        "backend_root",
         "cmr_reverse_root",
         "project_root",
         "repo_root",

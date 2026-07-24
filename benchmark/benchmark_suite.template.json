@@ -1,51 +1,70 @@
 {
-  "suite_id": "bcer_public_template",
-  "version": "0.1.0-template",
-  "description": "Template benchmark suite for the BCER public release. Replace dataset roots with local paths or generate manifests with scripts/manifest_builder.py.",
+  "suite_id": "bcer_public_suite",
+  "version": "1.0.0-template",
+  "description": "Runnable benchmark suite for the BCER public release. Each task references a contract in configs/tasks_registry.json; dataset_root and case_manifest values are placeholders — replace them with local paths or generate a shared case manifest with scripts/manifest_builder.py.",
+  "tasks_registry": "configs/tasks_registry.json",
+  "case_manifest": "<REPLACE_WITH_MANIFEST>/cases_manifest.jsonl",
   "tasks": [
     {
       "task_id": "short_denoise",
-      "domain": "brain_or_prostate",
-      "goal": "Run a short denoising workflow and validate the expected output artifact.",
-      "required_stage_success": [
-        "denoise"
-      ],
-      "required_artifacts": [
-        "denoised_volume"
-      ]
+      "domain": ["prostate", "brain"],
+      "toolchain": "short",
+      "request_type": "denoise",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/denoise",
+      "required_stage_success": ["denoise_image_bm3d"],
+      "required_artifacts": ["denoised_nifti"]
     },
     {
-      "task_id": "medium_register_prostate",
-      "domain": "prostate",
-      "goal": "Register prostate MRI sequences and validate the aligned output artifact.",
-      "required_stage_success": [
-        "register"
-      ],
-      "required_artifacts": [
-        "registered_volume"
-      ]
+      "task_id": "short_segment_brain",
+      "domain": ["brain"],
+      "toolchain": "short",
+      "request_type": "segment",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/brain",
+      "required_stage_success": ["identify_sequences", "brats_mri_segmentation"],
+      "required_artifacts": ["brain_seg", "brain_wt"]
+    },
+    {
+      "task_id": "short_recon_grappa",
+      "domain": ["cardiac"],
+      "toolchain": "short",
+      "request_type": "raw_recon",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/cardiac_raw",
+      "required_stage_success": ["reconstruct_grappa"],
+      "required_artifacts": ["reconstructed_nifti"]
     },
     {
       "task_id": "long_prostate_full",
-      "domain": "prostate",
-      "goal": "Run a long-chain prostate MRI workflow ending in structured report generation.",
-      "required_stage_success": [
-        "ingest",
-        "register",
-        "segment",
-        "extract_roi_features",
-        "generate_report"
-      ],
-      "required_artifacts": [
-        "segmentation_mask",
-        "roi_features",
-        "structured_report"
-      ]
+      "domain": ["prostate"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/prostate",
+      "required_stage_success": ["identify_sequences", "register_to_reference", "segment_prostate", "detect_lesion_candidates", "extract_roi_features", "generate_report"],
+      "required_artifacts": ["prostate_mask", "lesion_candidates", "feature_table", "report_json"]
+    },
+    {
+      "task_id": "long_cardiac_full",
+      "domain": ["cardiac"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/cardiac",
+      "required_stage_success": ["identify_sequences", "segment_cardiac_cine", "extract_roi_features", "classify_cardiac_cine_disease", "generate_report"],
+      "required_artifacts": ["cardiac_seg", "cardiac_classification", "cardiac_features", "cardiac_report"]
+    },
+    {
+      "task_id": "long_brain_full",
+      "domain": ["brain"],
+      "toolchain": "long",
+      "request_type": "full_pipeline",
+      "dataset_root": "<REPLACE_WITH_LOCAL_DATASET_ROOT>/brain",
+      "required_stage_success": ["identify_sequences", "register_to_reference", "brats_mri_segmentation", "extract_roi_features", "classify_brain_glioma_grade", "generate_report"],
+      "required_artifacts": ["brain_seg", "brain_wt", "brain_features", "brain_grade", "report_json"]
     }
   ],
   "notes": [
-    "This file intentionally contains no internal dataset paths.",
-    "Paper-result reproduction still needs a separate RESULT_PROVENANCE.md mapping manuscript tables to exact artifacts and commands.",
-    "Task contracts and validator fields should be finalized before public release."
+    "This file intentionally contains no internal dataset paths; dataset_root and case_manifest use <REPLACE_WITH_...> placeholders.",
+    "Each task_id maps to a full contract (required_modalities, success_criteria, invariants, fault_profiles) in configs/tasks_registry.json.",
+    "Build the shared case manifest with: python scripts/manifest_builder.py --tasks-registry configs/tasks_registry.json --prostate-root <ROOT> --brain-root <ROOT> --cardiac-root <ROOT> --output cases_manifest.jsonl (the builder buckets cases by domain and records which tasks each case supports).",
+    "Run one task with: python benchmark/benchmark_runner.py --task <task_id> --tasks-registry configs/tasks_registry.json --manifest <case_manifest> --arm <arm> [--fault <fault>].",
+    "Paper-result reproduction still needs a separate RESULT_PROVENANCE.md mapping manuscript tables to exact artifacts and commands."
   ]
 }

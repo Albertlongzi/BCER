@@ -9,7 +9,9 @@ ML model inference pipelines rather than plain scripts.
 
 ## 1. Current State
 
-All 24 tools share a single flat Python environment defined by `requirements.txt`:
+The current registry has **20 tools** (`tools/catalog.py:build_registry`). By
+default they share a single flat Python environment defined by
+`requirements.txt`:
 
 ```
 pydicom, SimpleITK, numpy, pillow          # DICOM / image I/O
@@ -68,10 +70,21 @@ Group tools by their actual dependency footprint rather than their pipeline stag
 | Tier | Name          | Tools                                                                                                      | Key Extra Deps                     |
 |------|---------------|------------------------------------------------------------------------------------------------------------|------------------------------------|
 | 0    | **Base**      | dicom_ingest, dicom_paths, alignment_qc, materialize_registration, registration, resample_image, compare_nifti_slices, generate_qa_snapshot, report_generation, vlm_evidence, sandbox_exec, rag_search | pydicom, SimpleITK, nibabel, numpy |
-| 1    | **Inference** | prostate_segmentation, brain_tumor_segmentation, cardiac_cine_segmentation, prostate_lesion_candidates, prostate_distortion_correction | + torch, monai                     |
+| 1    | **Inference** | prostate_segmentation, brain_tumor_segmentation, cardiac_cine_segmentation, prostate_lesion_candidates | + torch, monai                     |
 | 2    | **Recon**     | reconstruct_grappa                                                                                         | + pygrappa, h5py                   |
 | 3    | **Radiomics** | roi_features                                                                                               | + pyradiomics, scikit-image        |
 | 4    | **Classify**  | brain_glioma_grade_classification, cardiac_cine_classification                                             | (Tier 0 deps only — rule-based)    |
+
+> **Update (current registry).** The table above reflects the historical
+> pipeline names. In the shipped 20-tool registry the prostate distortion
+> correction tool (`correct_prostate_distortion`) has been removed, and
+> `segment_cardiac_cine` no longer depends on an external CMR checkout — it uses
+> a vendored, self-contained nnUNet backend under `external/nnunet_phys_seg`.
+> The two MONAI bundle tools (`segment_prostate`, `brats_mri_segmentation`) read
+> their bundle location from the `MRI_AGENT_PROSTATE_BUNDLE_DIR` /
+> `MRI_AGENT_BRATS_BUNDLE_DIR` env vars (set by `commands/tool_runtime.py` for
+> subprocess dispatch), so the subprocess tier can point them at the right
+> `assets/models/...` bundle without any argument plumbing.
 
 A few observations:
 - Tier 4 tools need no extra deps despite being "model-like" in name — they are
@@ -250,7 +263,8 @@ mostly an infrastructure change with no tool logic change.
 ## 6. What NOT to Do
 
 - **One conda env per tool** — overkill. There are only 4 real dependency clusters.
-  24 environments would create more management overhead than they solve.
+  one env per tool (20 environments) would create more management overhead than
+  they solve.
 - **Full MCP now** — too much refactor for a paper release. The payoff is real but
   the timing is wrong.
 - **Docker per tool** — appropriate for a deployed service, not a research codebase

@@ -46,6 +46,13 @@ cufile.log
 *.onnx
 *.ts
 *.safetensors
+*.model
+*.model.pkl
+
+# Fetched model assets. Everything under assets/models/ is produced by
+# scripts/download_assets.sh (downloads, copies, or symlinks into the local
+# HPC tree) and is never committed -- see docs/ASSETS.md for sources/licenses.
+assets/models/
 
 # Local benchmark manifests and generated results
 benchmark/cases_manifest*.jsonl
@@ -66,3 +73,6 @@ benchmark/tmp_*.json
 CLAUDE.md
 .rtk/
 public_stub/
+
+# Generated demo manifest
+demo/cases_manifest*.jsonl

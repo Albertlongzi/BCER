@@ -69,21 +69,6 @@ def extract_key_paths(tool_name: str, tool_result: Dict[str, Any]) -> Dict[str, 
         for k in ("candidates_path", "merged_prob_path", "lesion_mask_path"):
             if data.get(k):
                 out[k] = data.get(k)
-    elif tool_name == "correct_prostate_distortion":
-        for k in (
-            "out_dir",
-            "summary_json_path",
-            "backend_out_dir",
-            "prediction_npz_path",
-            "corrected_b50_nifti",
-            "corrected_highb_nifti",
-            "corrected_adc_nifti",
-            "num_pred_npz",
-            "num_panel_png",
-            "num_slice_png",
-        ):
-            if data.get(k) is not None:
-                out[k] = data.get(k)
     elif tool_name == "package_vlm_evidence":
         for k in ("vlm_evidence_path",):
             if data.get(k):
@@ -263,20 +248,6 @@ def build_memory_digest(*, case_state_path: Path, artifacts_dir: Path, max_event
             "candidates_path": les.get("candidates_path"),
             "merged_prob_path": les.get("merged_prob_path"),
             "lesion_mask_path": les.get("lesion_mask_path"),
-        }
-    dist = _latest_ok("correct_prostate_distortion")
-    if dist:
-        latest["distortion_correction"] = {
-            "out_dir": dist.get("out_dir"),
-            "summary_json_path": dist.get("summary_json_path"),
-            "backend_out_dir": dist.get("backend_out_dir"),
-            "prediction_npz_path": dist.get("prediction_npz_path"),
-            "corrected_b50_nifti": dist.get("corrected_b50_nifti"),
-            "corrected_highb_nifti": dist.get("corrected_highb_nifti"),
-            "corrected_adc_nifti": dist.get("corrected_adc_nifti"),
-            "num_pred_npz": dist.get("num_pred_npz"),
-            "num_panel_png": dist.get("num_panel_png"),
-            "num_slice_png": dist.get("num_slice_png"),
         }
     pkg = _latest_ok("package_vlm_evidence")
     if pkg:

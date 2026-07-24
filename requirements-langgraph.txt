@@ -1,0 +1,13 @@
+# Optional LangGraph planner backend for the BCER agent.
+#
+# agent/langgraph/loop.py imports `from langgraph.graph import END, StateGraph`
+# behind a guarded try/except. When LangGraph is not installed the shell falls
+# back to the built-in planning loop, so this dependency is intentionally
+# optional. Install it on top of the base environment when you want the
+# LangGraph-backed planner:
+#
+#     pip install -r requirements-base.txt
+#     pip install -r requirements-langgraph.txt
+#
+-r requirements-base.txt
+langgraph>=0.2

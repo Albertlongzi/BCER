@@ -48,7 +48,6 @@ tool_tiers:
     - brats_mri_segmentation
     - segment_cardiac_cine
     - detect_lesion_candidates
-    - correct_prostate_distortion
   recon:
     - reconstruct_grappa
   radiomics:

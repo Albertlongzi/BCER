@@ -25,7 +25,7 @@ This repository accompanies the MICCAI paper. It contains:
 
 - the BCER Brain planner, Cerebellum executor, Extremity tool layer, and
   Reflector recovery loop,
-- a strict tool registry with **21 MRI-domain tools** across prostate, brain, and cardiac workflows,
+- a strict tool registry with **20 MRI-domain tools** across prostate, brain, and cardiac workflows,
 - a **benchmark harness** with 4 controller arms,
 - a **smoke benchmark** that proves install correctness without medical data.
 
@@ -169,7 +169,7 @@ domain and how to bring a non-standard dataset.
 
 | Document | Audience |
 | --- | --- |
-| [`docs/TOOLS.md`](docs/TOOLS.md) | Tool call convention, the 21 registered tools, how to add new ones |
+| [`docs/TOOLS.md`](docs/TOOLS.md) | Tool call convention, the 20 registered tools, how to add new ones |
 | [`docs/METRICS.md`](docs/METRICS.md) | SR / TCR / ERR / safe-halt definitions and how to read a result |
 | [`docs/DATASETS.md`](docs/DATASETS.md) | Supported data layouts and manifest format |
 | [`docs/TOOL_ENV_ANALYSIS.md`](docs/TOOL_ENV_ANALYSIS.md) | Environment tiering and subprocess dispatch architecture |
@@ -207,7 +207,7 @@ core/              project paths, parser, plan DAG, domain config
 llm/               LLM backend adapters (OpenAI, Anthropic, Gemini, vLLM)
 mri_agent_shell/   interactive CLI shell + cerebellum runtime + dummy tools
 runtime/           memory, finalisation, artifact index, sandbox
-tools/             21 imaging tool wrappers + subprocess entry point
+tools/             20 imaging tool wrappers + subprocess entry point
 scripts/           manifest builder and one-off utilities
 envs/              tiered conda env files
 docs/              user-facing documentation

@@ -18,12 +18,19 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 if __package__ in {None, ""}:
     here = Path(__file__).resolve()
-    sys.path.append(str(here.parents[1]))
-    sys.path.append(str(here.parents[2]))
+    # Put the local repo root at the FRONT of sys.path so script-mode
+    # execution (`python benchmark/benchmark_runner.py`) resolves the in-repo
+    # agent/commands/core/... packages, ahead of any editable install that
+    # may sit on sys.path via an easy-install.pth (e.g. one pointing at a
+    # separate medgemma MRI_Agent copy). Using append would lose to the .pth.
+    for _p in (str(here.parents[2]), str(here.parents[1])):
+        if _p in sys.path:
+            sys.path.remove(_p)
+        sys.path.insert(0, _p)
 
 from agent.loop import run_agent_loop
 from agent.subagents.prompts import build_reactive_system_prompt
-from benchmark import benchmark_runner as bench_v1
+from benchmark import benchmark_runner_v1 as bench_v1
 from commands.schemas import ToolCall
 from core.domain_config import get_domain_config
 from core.paths import project_root

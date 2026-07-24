@@ -68,7 +68,6 @@ DEFAULT_TIER_TOOLS: Dict[str, List[str]] = {
         "brats_mri_segmentation",
         "segment_cardiac_cine",
         "detect_lesion_candidates",
-        "correct_prostate_distortion",
     ],
     "recon": [
         "reconstruct_grappa",
@@ -195,17 +194,11 @@ def _child_environment(cfg: ToolRuntimeConfig, tier: RuntimeTier) -> Dict[str, s
     env.setdefault("MRI_AGENT_PROSTATE_BUNDLE_DIR", str(cfg.assets_root / "models" / "prostate_mri_anatomy"))
     env.setdefault("MRI_AGENT_BRATS_BUNDLE_DIR", str(cfg.assets_root / "models" / "brats_mri_segmentation"))
     env.setdefault("MRI_AGENT_LESION_WEIGHTS_DIR", str(cfg.assets_root / "models" / "prostate_mri_lesion_seg" / "weight"))
-    env.setdefault("MRI_AGENT_PROSTATE_DISTORTION_ROOT", str(cfg.assets_root / "external" / "Prostate_distortion_recover"))
-    env.setdefault(
-        "MRI_AGENT_PROSTATE_DISTORTION_DIFF_CKPT",
-        str(cfg.assets_root / "checkpoints" / "prostate_distortion" / "diff_t2cnn_clean_epoch_092.pt"),
-    )
-    env.setdefault(
-        "MRI_AGENT_PROSTATE_DISTORTION_CNN_CKPT",
-        str(cfg.assets_root / "checkpoints" / "prostate_distortion" / "mageultra_epoch_025.pt"),
-    )
-    env.setdefault("MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT", str(cfg.assets_root / "external" / "cmr_reverse"))
-    env.setdefault("MRI_AGENT_CARDIAC_NNUNET_PYTHON", str(cfg.assets_root / "external" / "cmr_reverse" / "revimg" / "bin" / "python"))
+    # Cardiac cine segmentation uses the vendored Apache-2.0 nnUNet backend under
+    # external/nnunet_phys_seg with weights fetched separately under assets/. The
+    # backend interpreter (MRI_AGENT_CARDIAC_SEG_PYTHON) is left for the user to set
+    # to their bcer-cardiac-seg env; it falls back to the current interpreter.
+    env.setdefault("MRI_AGENT_CARDIAC_BACKEND_ROOT", str(cfg.project_root / "external" / "nnunet_phys_seg"))
     env.setdefault("MRI_AGENT_CARDIAC_RESULTS_FOLDER", str(cfg.assets_root / "models" / "cardiac_nnunet" / "results"))
 
     for key, value in (tier.env or {}).items():

@@ -2,14 +2,19 @@
 Tool: segment_cardiac_cine
 
 Purpose:
-- Run cardiac cine short-axis segmentation using a project-local cmr_reverse
-  adapter and nnUNet model assets.
+- Run cardiac cine short-axis segmentation using the vendored, Apache-2.0
+  physics-augmented nnUNet (V1) backend under ``external/nnunet_phys_seg`` and
+  nnUNet model weights fetched separately under ``assets/``.
 
 Inputs:
 - cine_path: NIfTI file (.nii.gz/.nii) or directory containing cine NIfTI(s)
-- cmr_reverse_root (optional): cmr_reverse project root
-- nnunet_python (optional): Python executable with nnUNet installed
-- results_folder (optional): nnUNet RESULTS_FOLDER path
+- backend_root (optional): vendored nnUNet backend root (default
+  ``{PROJECT_ROOT}/external/nnunet_phys_seg``). The legacy ``cmr_reverse_root``
+  key is still honored for back-compat.
+- nnunet_python (optional): Python executable with the nnUNet backend installed
+  (default: MRI_AGENT_CARDIAC_SEG_PYTHON or the current interpreter)
+- results_folder (optional): nnUNet RESULTS_FOLDER path (default
+  ``{ASSETS_ROOT}/models/cardiac_nnunet/results``)
 - output_subdir (optional)
 - task_name / trainer_class_name / model / folds / checkpoint (optional overrides)
 
@@ -24,6 +29,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,8 +40,9 @@ from core.paths import project_root
 CARDIAC_SEG_SPEC = ToolSpec(
     name="segment_cardiac_cine",
     description=(
-        "Segment cardiac cine MRI using local cmr_reverse nnUNet weights "
-        "(Task900_ACDC_Phys, trainer nnUNetTrainerV2_InvGreAug). "
+        "Segment cardiac cine MRI using the vendored physics-augmented nnUNet "
+        "backend and separately-fetched weights "
+        "(default Task900_ACDC_Phys, trainer nnUNetTrainerV2_InvGreAug; both overridable). "
         "Produces multi-class segmentation and class-specific masks for RV/MYO/LV."
     ),
     input_schema={
@@ -44,6 +51,7 @@ CARDIAC_SEG_SPEC = ToolSpec(
             "cine_path": {"type": "string"},
             "acdc_info_cfg": {"type": "string"},
             "use_ed_es_only": {"type": "boolean"},
+            "backend_root": {"type": "string"},
             "cmr_reverse_root": {"type": "string"},
             "nnunet_python": {"type": "string"},
             "results_folder": {"type": "string"},
@@ -87,19 +95,49 @@ def _require_sitk():
     return sitk
 
 
-def _default_cmr_reverse_root() -> Path:
-    env = os.getenv("MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT")
+def _repo_root() -> Path:
+    env = os.getenv("BCER_PROJECT_ROOT")
     if env:
         return Path(env).expanduser().resolve()
-    repo_root = project_root()
-    candidates = [
-        repo_root / "external" / "cmr_reverse",
-        repo_root / "assets" / "external" / "cmr_reverse",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c.resolve()
-    return candidates[0].resolve()
+    return project_root()
+
+
+def _assets_root() -> Path:
+    env = os.getenv("BCER_ASSETS_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (_repo_root() / "assets").resolve()
+
+
+def _vendored_backend_src() -> Path:
+    """Vendored, Apache-2.0 nnUNet backend package parent (importable as ``nnunet``)."""
+    return (_repo_root() / "external" / "nnunet_phys_seg").resolve()
+
+
+def _default_backend_root() -> Path:
+    # Neutral var wins; legacy MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT still honored.
+    env = os.getenv("MRI_AGENT_CARDIAC_BACKEND_ROOT") or os.getenv(
+        "MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT"
+    )
+    if env:
+        return Path(env).expanduser().resolve()
+    return _vendored_backend_src()
+
+
+def _default_seg_python() -> Path:
+    env = os.getenv("MRI_AGENT_CARDIAC_SEG_PYTHON") or os.getenv(
+        "MRI_AGENT_CARDIAC_NNUNET_PYTHON"
+    )
+    if env:
+        return Path(os.path.abspath(os.path.expanduser(env)))
+    return Path(sys.executable)
+
+
+def _default_results_folder() -> Path:
+    env = os.getenv("MRI_AGENT_CARDIAC_RESULTS_FOLDER")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (_assets_root() / "models" / "cardiac_nnunet" / "results").resolve()
 
 
 def _stem_nii(path: Path) -> str:
@@ -297,7 +335,7 @@ def _prepare_cases(
 def _run_nnunet_predict(
     *,
     nnunet_python: Path,
-    cmr_reverse_root: Path,
+    backend_root: Path,
     results_folder: Path,
     input_dir: Path,
     pred_dir: Path,
@@ -310,14 +348,17 @@ def _run_nnunet_predict(
     num_threads_preprocessing: int,
     num_threads_nifti_save: int,
 ) -> Tuple[str, str, List[str]]:
-    raw_base = cmr_reverse_root / "nnunetdata" / "raw"
-    preprocessed = cmr_reverse_root / "nnunetdata" / "preprocessed"
-    if not raw_base.exists():
-        raise FileNotFoundError(f"Missing nnUNet raw path: {raw_base}")
-    if not preprocessed.exists():
-        raise FileNotFoundError(f"Missing nnUNet preprocessed path: {preprocessed}")
+    # Inference only needs RESULTS_FOLDER (the trained weights). nnUNet V1
+    # paths.py merely warns when raw/preprocessed are unset, so those dirs are
+    # optional here; we pass them through only when they actually exist (e.g.
+    # when backend_root points at a full training tree).
+    raw_base = backend_root / "nnunetdata" / "raw"
+    preprocessed = backend_root / "nnunetdata" / "preprocessed"
     if not results_folder.exists():
-        raise FileNotFoundError(f"Missing nnUNet RESULTS_FOLDER: {results_folder}")
+        raise FileNotFoundError(
+            "Missing nnUNet RESULTS_FOLDER (download the cardiac weights first): "
+            f"{results_folder}"
+        )
     if not nnunet_python.exists():
         raise FileNotFoundError(f"nnunet_python not found: {nnunet_python}")
 
@@ -353,17 +394,22 @@ def _run_nnunet_predict(
         cmd.append("--disable_tta")
 
     env = os.environ.copy()
-    env["nnUNet_raw_data_base"] = str(raw_base)
-    env["nnUNet_preprocessed"] = str(preprocessed)
+    # Inference requires only RESULTS_FOLDER; raw/preprocessed are attached only
+    # when present so paths.py does not create empty dirs inside the source tree.
+    if raw_base.exists():
+        env["nnUNet_raw_data_base"] = str(raw_base)
+    if preprocessed.exists():
+        env["nnUNet_preprocessed"] = str(preprocessed)
     env["RESULTS_FOLDER"] = str(results_folder)
-    nnunet_src = cmr_reverse_root / "nnunet"
+    # Import the vendored, Apache-2.0 nnUNet backend from external/nnunet_phys_seg.
+    nnunet_src = _vendored_backend_src()
     if nnunet_src.exists():
         prev = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{nnunet_src}:{prev}" if prev else str(nnunet_src)
 
     proc = subprocess.run(
         cmd,
-        cwd=str(cmr_reverse_root),
+        cwd=str(backend_root if backend_root.exists() else _repo_root()),
         env=env,
         capture_output=True,
         text=True,
@@ -441,7 +487,7 @@ def run_cardiac_cine_segmentation(
     *,
     cine_path: Path,
     output_dir: Path,
-    cmr_reverse_root: Path,
+    backend_root: Path,
     nnunet_python: Path,
     results_folder: Path,
     task_name: str = "Task900_ACDC_Phys",
@@ -482,7 +528,7 @@ def run_cardiac_cine_segmentation(
 
     stdout, stderr, cmd = _run_nnunet_predict(
         nnunet_python=nnunet_python,
-        cmr_reverse_root=cmr_reverse_root,
+        backend_root=backend_root,
         results_folder=results_folder,
         input_dir=input_dir,
         pred_dir=pred_dir,
@@ -535,7 +581,7 @@ def run_cardiac_cine_segmentation(
         "log_path": str(log_path),
         "input_dir": str(input_dir),
         "pred_dir": str(pred_dir),
-        "cmr_reverse_root": str(cmr_reverse_root),
+        "backend_root": str(backend_root),
         "results_folder": str(results_folder),
         "task_name": str(task_name_norm),
         "trainer_class_name": str(trainer_class_name),
@@ -549,16 +595,16 @@ def run_cardiac_cine_segmentation(
 
 def segment_cardiac_cine(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     cine_path = Path(str(args["cine_path"])).expanduser().resolve()
-    cmr_reverse_root = Path(str(args.get("cmr_reverse_root") or _default_cmr_reverse_root())).expanduser().resolve()
+    # backend_root is the neutral key; cmr_reverse_root stays for back-compat.
+    backend_root_arg = args.get("backend_root") or args.get("cmr_reverse_root")
+    backend_root = Path(str(backend_root_arg or _default_backend_root())).expanduser().resolve()
     nnunet_python = Path(
-        os.path.abspath(
-            os.path.expanduser(str(args.get("nnunet_python") or (cmr_reverse_root / "revimg" / "bin" / "python")))
-        )
-    )
+        os.path.abspath(os.path.expanduser(str(args.get("nnunet_python"))))
+    ) if args.get("nnunet_python") else _default_seg_python()
     acdc_info_cfg_raw = str(args.get("acdc_info_cfg") or "").strip()
     acdc_info_cfg = Path(acdc_info_cfg_raw).expanduser().resolve() if acdc_info_cfg_raw else None
     use_ed_es_only = bool(args.get("use_ed_es_only", True))
-    results_folder = Path(str(args.get("results_folder") or (cmr_reverse_root / "nnunetdata" / "results"))).expanduser().resolve()
+    results_folder = Path(str(args.get("results_folder") or _default_results_folder())).expanduser().resolve()
     out_subdir = str(args.get("output_subdir") or "segmentation/cardiac_cine")
     out_dir = ctx.artifacts_dir / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -566,11 +612,19 @@ def segment_cardiac_cine(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
     result = run_cardiac_cine_segmentation(
         cine_path=cine_path,
         output_dir=out_dir,
-        cmr_reverse_root=cmr_reverse_root,
+        backend_root=backend_root,
         nnunet_python=nnunet_python,
         results_folder=results_folder,
-        task_name=str(args.get("task_name") or "Task900_ACDC_Phys"),
-        trainer_class_name=str(args.get("trainer_class_name") or "nnUNetTrainerV2_InvGreAug"),
+        task_name=str(
+            args.get("task_name")
+            or os.getenv("MRI_AGENT_CARDIAC_TASK")
+            or "Task900_ACDC_Phys"
+        ),
+        trainer_class_name=str(
+            args.get("trainer_class_name")
+            or os.getenv("MRI_AGENT_CARDIAC_TRAINER")
+            or "nnUNetTrainerV2_InvGreAug"
+        ),
         model=str(args.get("model") or "2d"),
         folds=list(args.get("folds") or [0, 1, 2, 3, 4]),
         checkpoint=str(args.get("checkpoint") or "model_final_checkpoint"),

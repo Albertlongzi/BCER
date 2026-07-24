@@ -82,19 +82,6 @@
       "label": "Extract ROI/radiomics features"
     },
     {
-      "node_id": "extract_features_041",
-      "tool_name": "extract_roi_features",
-      "stage": "extract",
-      "arguments": {
-        "output_subdir": "features/lesion"
-      },
-      "required": false,
-      "depends_on": [
-        "segment_prostate_030"
-      ],
-      "label": "Extract lesion-level ROI/radiomics features (optional, second call)"
-    },
-    {
       "node_id": "detect_lesions_050",
       "tool_name": "detect_lesion_candidates",
       "stage": "lesion",

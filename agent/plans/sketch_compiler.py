@@ -91,6 +91,7 @@ _KNOWN_NODE_OUTPUT_FIELDS: Dict[str, Set[str]] = {
         "trainer_class_name",
         "model",
         "folds",
+        "backend_root",
         "cmr_reverse_root",
         "note",
     },

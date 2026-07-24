@@ -1028,8 +1028,19 @@ def detect_lesion_candidates(args: Dict[str, Any], ctx) -> Dict[str, Any]:
         "mask_inside_prostate_enforced": True,
     }
 
+    # `num_candidates` is part of the candidates.json contract (the benchmark's
+    # candidates_json_valid invariant requires it); keep it in sync with comps.
     candidates_path.write_text(
-        json.dumps({"threshold": threshold, "filter_stats": filter_stats, "candidates": comps}, indent=2) + "\n",
+        json.dumps(
+            {
+                "threshold": threshold,
+                "num_candidates": int(len(comps)),
+                "filter_stats": filter_stats,
+                "candidates": comps,
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
 

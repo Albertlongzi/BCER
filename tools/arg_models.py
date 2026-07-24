@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, ValidationInfo, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
 from core.domain_config import DomainConfig, get_domain_config
 from core.paths import project_root
@@ -110,13 +111,9 @@ class RepairConfig:
     prostate_bundle_dir: Path
     lesion_weights_dir: Path
     brain_bundle_dir: Path
-    cardiac_cmr_reverse_root: Path
+    cardiac_backend_root: Path
     cardiac_nnunet_python: Path
     cardiac_results_folder: Path
-    distortion_repo_root: Path
-    distortion_diff_ckpt: Path
-    distortion_cnn_ckpt: Path
-    distortion_test_roots: List[str]
 
     @staticmethod
     def from_env(repo_root: Path) -> "RepairConfig":
@@ -136,77 +133,39 @@ class RepairConfig:
                 str(model_registry / "brats_mri_segmentation"),
             )
         ).expanduser().resolve()
-        cardiac_root_default = repo_root / "external" / "cmr_reverse"
+        # Self-contained cardiac backend: vendored Apache-2.0 nnUNet fork under
+        # external/nnunet_phys_seg, weights fetched separately under assets/.
+        # Mirrors tools/cardiac_cine_segmentation.py resolvers so both agree.
+        cardiac_root_default = repo_root / "external" / "nnunet_phys_seg"
         cardiac_root = Path(
-            os.getenv("MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT", str(cardiac_root_default))
+            # Neutral var wins; legacy MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT still honored.
+            os.getenv("MRI_AGENT_CARDIAC_BACKEND_ROOT")
+            or os.getenv("MRI_AGENT_CARDIAC_CMR_REVERSE_ROOT", str(cardiac_root_default))
         ).expanduser().resolve()
-        # Keep symlink path as-is (do not resolve), otherwise a venv shim like
-        # revimg/bin/python -> python3.11 can collapse to /usr/bin/python3.11.
-        cardiac_nnunet_python = Path(
-            os.path.abspath(
-                os.path.expanduser(
-                    os.getenv(
-                        "MRI_AGENT_CARDIAC_NNUNET_PYTHON",
-                        str(cardiac_root / "revimg" / "bin" / "python"),
-                    )
-                )
-            )
+        # Keep the interpreter path as-is (do not resolve symlinks): a venv shim can
+        # otherwise collapse onto a system interpreter and drop its site-packages.
+        cardiac_seg_python_env = os.getenv("MRI_AGENT_CARDIAC_SEG_PYTHON") or os.getenv(
+            "MRI_AGENT_CARDIAC_NNUNET_PYTHON"
+        )
+        cardiac_nnunet_python = (
+            Path(os.path.abspath(os.path.expanduser(cardiac_seg_python_env)))
+            if cardiac_seg_python_env
+            else Path(sys.executable)
         )
         cardiac_results = Path(
             os.getenv(
                 "MRI_AGENT_CARDIAC_RESULTS_FOLDER",
-                str(cardiac_root / "nnunetdata" / "results"),
+                str(repo_root / "assets" / "models" / "cardiac_nnunet" / "results"),
             )
         ).expanduser().resolve()
-        distortion_root_default = repo_root / "external" / "Prostate_distortion_recover"
-        distortion_root = Path(
-            os.getenv("MRI_AGENT_PROSTATE_DISTORTION_ROOT", str(distortion_root_default))
-        ).expanduser().resolve()
-        distortion_diff_ckpt = Path(
-            os.getenv(
-                "MRI_AGENT_PROSTATE_DISTORTION_DIFF_CKPT",
-                str(
-                    distortion_root
-                    / "network_runs"
-                    / "diffusion_clean_v2"
-                    / "diff_t2cnn_clean_epoch_092.pt"
-                ),
-            )
-        ).expanduser().resolve()
-        distortion_cnn_ckpt = Path(
-            os.getenv(
-                "MRI_AGENT_PROSTATE_DISTORTION_CNN_CKPT",
-                str(
-                    distortion_root
-                    / "network_runs"
-                    / "mageultra_dualb_axis01_quick_local_v25"
-                    / "mageultra_epoch_025.pt"
-                ),
-            )
-        ).expanduser().resolve()
-        test_roots_env = str(os.getenv("MRI_AGENT_PROSTATE_DISTORTION_TEST_ROOTS", "")).strip()
-        distortion_test_roots: List[str] = []
-        if test_roots_env:
-            parts = [x.strip() for x in re.split(r"[,:;]", test_roots_env) if x.strip()]
-            for p in parts:
-                distortion_test_roots.append(str(Path(p).expanduser().resolve()))
-        if not distortion_test_roots:
-            distortion_test_roots = [
-                str((distortion_root / "validation_data2_TSE").expanduser().resolve()),
-                str((distortion_root / "preprocessed_infer_npz").expanduser().resolve()),
-            ]
         return RepairConfig(
             model_registry_path=model_registry,
             prostate_bundle_dir=prostate_bundle,
             lesion_weights_dir=lesion_weights,
             brain_bundle_dir=brain_bundle,
-            cardiac_cmr_reverse_root=cardiac_root,
+            cardiac_backend_root=cardiac_root,
             cardiac_nnunet_python=cardiac_nnunet_python,
             cardiac_results_folder=cardiac_results,
-            distortion_repo_root=distortion_root,
-            distortion_diff_ckpt=distortion_diff_ckpt,
-            distortion_cnn_ckpt=distortion_cnn_ckpt,
-            distortion_test_roots=distortion_test_roots,
         )
 
 
@@ -718,7 +677,12 @@ class SegmentBrainTumorArgs(ToolArgsBase):
 
 class SegmentCardiacCineArgs(ToolArgsBase):
     cine_path: Optional[str] = None
-    cmr_reverse_root: Optional[str] = None
+    # Neutral key for the vendored nnUNet backend root; the legacy private-repo
+    # key `cmr_reverse_root` is still accepted (validation alias) for back-compat.
+    backend_root: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("backend_root", "cmr_reverse_root"),
+    )
     nnunet_python: Optional[str] = None
     results_folder: Optional[str] = None
     task_name: Optional[str] = None
@@ -755,24 +719,21 @@ class SegmentCardiacCineArgs(ToolArgsBase):
                         self.cine_path = path
                         break
 
-        default_root = ctx.config.cardiac_cmr_reverse_root
+        default_root = ctx.config.cardiac_backend_root
         default_py = ctx.config.cardiac_nnunet_python
         default_results = ctx.config.cardiac_results_folder
 
-        root_raw = str(self.cmr_reverse_root or "").strip()
+        root_raw = str(self.backend_root or "").strip()
         root_path = Path(root_raw).expanduser().resolve() if root_raw else default_root
-        # Guardrail: reject paths that exist but are clearly not a cmr_reverse repo root.
+        # Guardrail: reject paths that exist but are clearly not an nnUNet backend
+        # root. Inference only needs the importable `nnunet` package (raw/preprocessed
+        # are optional under the vendored layout), so require just that marker.
         try:
-            required = [
-                root_path / "nnunetdata" / "raw",
-                root_path / "nnunetdata" / "preprocessed",
-                root_path / "nnunet",
-            ]
-            if not all(p.exists() for p in required):
+            if not (root_path / "nnunet").exists():
                 root_path = default_root
         except Exception:
             root_path = default_root
-        self.cmr_reverse_root = str(root_path)
+        self.backend_root = str(root_path)
 
         py_raw = str(self.nnunet_python or "").strip()
         py_path = Path(os.path.abspath(os.path.expanduser(py_raw))) if py_raw else default_py
@@ -1348,36 +1309,6 @@ class DetectLesionCandidatesArgs(ToolArgsBase):
         if (not self.t2w_nifti) and t2_nifti and t2_nifti.exists():
             self.t2w_nifti = str(t2_nifti)
 
-        # Prefer corrected diffusion outputs when distortion correction succeeded.
-        try:
-            dist = ctx.latest_tool_data("register", "correct_prostate_distortion")
-        except Exception:
-            dist = {}
-        if isinstance(dist, dict):
-            corr_t2 = dist.get("t2w_nifti")
-            corr_adc = dist.get("corrected_adc_nifti")
-            corr_highb = dist.get("corrected_highb_nifti")
-            have_corr = False
-            if isinstance(corr_adc, str) and corr_adc and Path(corr_adc).exists():
-                have_corr = True
-            if (
-                isinstance(corr_t2, str)
-                and corr_t2
-                and Path(corr_t2).exists()
-            ):
-                # Keep lesion detection in the same reference space used by distortion correction.
-                self.t2w_nifti = corr_t2
-                have_corr = True
-            if isinstance(corr_adc, str) and corr_adc and Path(corr_adc).exists():
-                self.adc_nifti = corr_adc
-                have_corr = True
-            if isinstance(corr_highb, str) and corr_highb and Path(corr_highb).exists():
-                self.highb_nifti = corr_highb
-                have_corr = True
-            if have_corr and t2_nifti and t2_nifti.exists():
-                # Force T2 reference to segmentation-space T2 input when corrected DWI/ADC are selected.
-                self.t2w_nifti = str(t2_nifti)
-
         if not self.adc_nifti:
             adc_nifti = locator.pick_adc_nifti(nifti_paths)
             if adc_nifti:
@@ -1418,76 +1349,6 @@ class DetectLesionCandidatesArgs(ToolArgsBase):
             self.device = "cuda"
         if "output_subdir" not in fields_set:
             self.output_subdir = "lesion"
-        return self
-
-
-class CorrectProstateDistortionArgs(ToolArgsBase):
-    t2w_nifti: Optional[str] = None
-    adc_nifti: Optional[str] = None
-    highb_nifti: Optional[str] = None
-    python_exec: Optional[str] = None
-    output_subdir: Optional[str] = None
-    device: Optional[str] = None
-    b_low: Optional[float] = None
-    b_high: Optional[float] = None
-    steps: Optional[int] = None
-    strength: Optional[float] = None
-    sampler: Optional[str] = None
-    radius: Optional[int] = None
-    num_gpus: Optional[int] = None
-    save_npz: Optional[bool] = None
-    save_slices: Optional[bool] = None
-
-    @model_validator(mode="after")
-    def _repair(self, info: ValidationInfo) -> "CorrectProstateDistortionArgs":
-        ctx = _ctx(info)
-        if not ctx:
-            return self
-        fields_set = self.model_fields_set
-        seg = ctx.segment_data or {}
-        locator = ArtifactLocator(ctx.run_artifacts_dir, seg)
-        nifti_paths = locator.list_intensity_niftis()
-
-        if "t2w_nifti" not in fields_set:
-            t2 = locator.t2w_nifti_path()
-            if t2 and t2.exists():
-                self.t2w_nifti = str(t2)
-        if "adc_nifti" not in fields_set:
-            adc = locator.pick_adc_nifti(nifti_paths)
-            if adc:
-                self.adc_nifti = str(adc)
-        if "highb_nifti" not in fields_set:
-            highb = locator.pick_highb_nifti(nifti_paths)
-            if highb:
-                self.highb_nifti = str(highb)
-
-        if "python_exec" not in fields_set:
-            self.python_exec = str(os.getenv("MRI_AGENT_PROSTATE_DISTORTION_PYTHON", "python"))
-
-        out_subdir = str(self.output_subdir or "distortion_correction").strip() or "distortion_correction"
-        if "output_subdir" not in fields_set:
-            self.output_subdir = out_subdir
-
-        if "device" not in fields_set:
-            self.device = "cuda"
-        if "b_low" not in fields_set:
-            self.b_low = 50.0
-        if "b_high" not in fields_set:
-            self.b_high = 1400.0
-        if "steps" not in fields_set:
-            self.steps = 100
-        if "strength" not in fields_set:
-            self.strength = 0.3
-        if "sampler" not in fields_set:
-            self.sampler = "dpmsolver"
-        if "radius" not in fields_set:
-            self.radius = 2
-        if "num_gpus" not in fields_set:
-            self.num_gpus = 1
-        if "save_npz" not in fields_set:
-            self.save_npz = True
-        if "save_slices" not in fields_set:
-            self.save_slices = True
         return self
 
 
@@ -1542,7 +1403,6 @@ _ARG_MODEL_REGISTRY: Dict[str, type[ToolArgsBase]] = {
     "classify_cardiac_cine_disease": ClassifyCardiacCineDiseaseArgs,
     "extract_roi_features": ExtractRoiFeaturesArgs,
     "detect_lesion_candidates": DetectLesionCandidatesArgs,
-    "correct_prostate_distortion": CorrectProstateDistortionArgs,
     "package_vlm_evidence": PackageVlmEvidenceArgs,
     "generate_report": GenerateReportArgs,
 }

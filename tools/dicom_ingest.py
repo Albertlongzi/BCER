@@ -612,7 +612,20 @@ def _iter_dicom_recursive_lines(
                 continue
 
             if vr == "SQ":
-                seq_val = raw_val if isinstance(raw_val, (list, tuple)) else []
+                # pydicom's Sequence is not a list/tuple subclass (pydicom>=2.x
+                # bases it on MultiValue/MutableSequence), so an isinstance
+                # check against (list, tuple) silently drops every sequence item.
+                # Coerce any iterable sequence value into a concrete list so the
+                # nested items get unrolled.
+                if raw_val is None:
+                    seq_val = []
+                elif isinstance(raw_val, (list, tuple)):
+                    seq_val = list(raw_val)
+                else:
+                    try:
+                        seq_val = list(raw_val)
+                    except Exception:
+                        seq_val = []
                 n_items = len(seq_val)
                 lines.append(f"{indent}{tag} {keyword}: <Sequence {n_items} item(s)>")
                 if depth >= max_depth:

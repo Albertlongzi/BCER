@@ -54,7 +54,6 @@
       ],
       "checks": [
         "Require whole-gland mask and registered ADC + high-b DWI.",
-        "If DWI/ADC QC overlays suggest severe distortion, run correct_prostate_distortion before detect_lesion_candidates.",
         "If high-b DWI is present, run lesion detection before reporting; only skip if high-b DWI is missing."
       ],
       "preconditions": [

@@ -8,6 +8,8 @@ dependencies:
   - pydicom
   - simpleitk
   - pillow
+  - nibabel>=5.1
+  - scipy>=1.10
   - pyyaml
   - jsonschema
   - pip:
@@ -15,3 +17,7 @@ dependencies:
       - anthropic>=0.25
       - google-generativeai>=0.5
       - bm3d
+      # Optional: LangGraph planner backend. agent/langgraph/loop.py imports it
+      # behind a guarded try/except and falls back to the built-in loop when it
+      # is absent. Install it with:  pip install -r requirements-langgraph.txt
+      # - langgraph>=0.2

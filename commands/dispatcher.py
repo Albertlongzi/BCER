@@ -204,7 +204,6 @@ class ToolDispatcher:
                 "resample_image",
                 "extract_roi_features",
                 "detect_lesion_candidates",
-                "correct_prostate_distortion",
                 "package_vlm_evidence",
                 "generate_report",
             }

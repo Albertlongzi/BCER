@@ -37,7 +37,6 @@ from ..subagents.sketch_planner import SketchPlannerSubagent
 from ..subagents.policy import PolicySubagent, build_guided_schema
 from ..subagents.reflector import ReflectorSubagent
 from ..subagents.alignment_gate import AlignmentGateSubagent
-from ..subagents.distortion_gate import DistortionGateSubagent
 from ..subagents.prompts import (
     LANGGRAPH_SYSTEM_PROMPT,
     PLAN_SYSTEM_PROMPT,
@@ -53,7 +52,6 @@ from core.paths import project_root
 from tools.dicom_ingest import build_tools as build_dicom_tools
 from tools.roi_features import build_tool as build_feature_tool
 from tools.prostate_lesion_candidates import build_tool as build_lesion_candidates_tool
-from tools.prostate_distortion_correction import build_tool as build_prostate_distortion_tool
 from tools.vlm_evidence import build_tool as build_package_vlm_evidence_tool
 from tools.report_generation import build_tool as build_report_tool
 from tools.registration import build_tool as build_registration_tool
@@ -109,7 +107,6 @@ def build_registry() -> ToolRegistry:
     reg.register(build_cardiac_cine_classification_tool())
     reg.register(build_feature_tool())
     reg.register(build_lesion_candidates_tool())
-    reg.register(build_prostate_distortion_tool())
     reg.register(build_package_vlm_evidence_tool())
     reg.register(build_report_tool())
     reg.register(build_bm3d_denoise_tool())
@@ -169,15 +166,10 @@ def _planner_default_external_model_roots() -> List[str]:
         _push(cfg.prostate_bundle_dir)
         _push(cfg.lesion_weights_dir)
         _push(cfg.brain_bundle_dir)
-        _push(cfg.cardiac_cmr_reverse_root)
+        _push(cfg.cardiac_backend_root)
         _push(cfg.cardiac_results_folder)
         _push(cfg.cardiac_nnunet_python)
         _push(Path(cfg.cardiac_nnunet_python).expanduser().resolve().parent)
-        _push(cfg.distortion_repo_root)
-        _push(cfg.distortion_diff_ckpt)
-        _push(cfg.distortion_cnn_ckpt)
-        for p in (cfg.distortion_test_roots or []):
-            _push(p)
     except Exception:
         pass
     return out
@@ -416,7 +408,10 @@ def _score_cardiac_cine_candidate(path_like: str) -> int:
         score = max(score, 7)
     if p.endswith("_4d.nii.gz") or p.endswith("_4d.nii"):
         score = max(score, 7)
-    if re.search(r"_frame\d{2,3}(?:\.nii(?:\.gz)?)?$", p):
+    # ACDC single-phase volumes: patientNNN_frameNN.nii.gz, and the same file after
+    # conversion to the nnUNet layout, which appends a _NNNN channel index
+    # (patientNNN_frameNN_0000.nii.gz). Both are valid cine inputs.
+    if re.search(r"_frame\d{2,3}(?:_\d{4})?(?:\.nii(?:\.gz)?)?$", p):
         score = max(score, 6)
     return score
 
@@ -3504,14 +3499,12 @@ class LangGraphRunCtx:
     reflector: ReflectorSubagent
     policy: PolicySubagent
     alignment_gate: AlignmentGateSubagent
-    distortion_gate: DistortionGateSubagent
     domain: DomainConfig
     lesion_threshold_default: float
     lesion_min_volume_cc: float
     lesion_threshold_adaptive: bool
     lesion_threshold_candidates: List[float]
     lesion_threshold_max_retries: int
-    distortion_gate_override: Optional[str]  # None|"off"|"forced_on"  (Track 2 arms)
     progress_emit: Optional[Callable[[Dict[str, Any]], None]]
 
 
@@ -3625,13 +3618,6 @@ def _alignment_gate_paths(run_dir: Path) -> Dict[str, Path]:
     return {
         "qc_summary": qc_dir / "alignment_qc_summary.json",
         "gate_decision": ctx_dir / "alignment_gate.json",
-    }
-
-
-def _distortion_gate_paths(run_dir: Path) -> Dict[str, Path]:
-    ctx_dir = run_dir / "artifacts" / "context"
-    return {
-        "gate_decision": ctx_dir / "distortion_gate.json",
     }
 
 
@@ -3984,215 +3970,6 @@ def _alignment_gate_for_calls(
             return {"action": "tool_calls", "calls": new_calls}, "alignment_gate_skip_register"
 
     return calls_obj, None
-
-
-def _load_distortion_gate_decision(run_dir: Path) -> Optional[Dict[str, Any]]:
-    paths = _distortion_gate_paths(run_dir)
-    if paths["gate_decision"].exists():
-        return _load_json(paths["gate_decision"])
-    return None
-
-
-def _write_distortion_gate_decision(run_dir: Path, decision: Dict[str, Any]) -> None:
-    paths = _distortion_gate_paths(run_dir)
-    paths["gate_decision"].parent.mkdir(parents=True, exist_ok=True)
-    paths["gate_decision"].write_text(json.dumps(decision, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-
-
-def _collect_distortion_gate_images(run_dir: Path) -> List[Dict[str, Any]]:
-    art_dir = run_dir / "artifacts"
-    patterns = [
-        "registration/DWI/*edges_overlay*.png",
-        "registration/ADC/*edges_overlay*.png",
-        "registration/DWI/*central*.png",
-        "registration/ADC/*central*.png",
-        "alignment_qc/*edges_overlay*.png",
-        "alignment_qc/*central*.png",
-    ]
-    out: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    for pat in patterns:
-        for p in sorted(art_dir.glob(pat)):
-            rp = str(p.resolve())
-            if rp in seen:
-                continue
-            seen.add(rp)
-            label = p.name.replace("_", " ")
-            out.append({"name": p.name, "label": label, "path": rp})
-            if len(out) >= 10:
-                return out
-    return out
-
-
-def _registration_summaries_for_distortion(case_state_path: Path) -> List[Dict[str, Any]]:
-    cs = _read_case_state(case_state_path)
-    stage_outputs = cs.get("stage_outputs", {}) if isinstance(cs, dict) else {}
-    out: List[Dict[str, Any]] = []
-    if not isinstance(stage_outputs, dict):
-        return out
-    for _stage, tools in stage_outputs.items():
-        if not isinstance(tools, dict):
-            continue
-        recs = tools.get("register_to_reference")
-        if not isinstance(recs, list):
-            continue
-        for r in recs:
-            if not isinstance(r, dict):
-                continue
-            data = r.get("data") if isinstance(r.get("data"), dict) else {}
-            if not isinstance(data, dict):
-                continue
-            out.append(
-                {
-                    "ok": bool(r.get("ok")),
-                    "moving": data.get("moving"),
-                    "fixed": data.get("fixed"),
-                    "output_subdir": data.get("output_subdir"),
-                    "qc_metrics": data.get("qc_metrics"),
-                    "qc_pngs": data.get("qc_pngs"),
-                }
-            )
-    return out[-6:]
-
-
-def _should_consider_distortion_gate(run: LangGraphRunCtx, parsed_obj: Dict[str, Any]) -> bool:
-    if getattr(run.domain, "name", None) != "prostate":
-        return False
-    action = str(parsed_obj.get("action") or "")
-    downstream = {
-        "extract_roi_features",
-        "detect_lesion_candidates",
-        "package_vlm_evidence",
-        "generate_report",
-    }
-    if action == "tool_call":
-        t = str(parsed_obj.get("tool_name") or "")
-        return t in downstream
-    if action == "tool_calls":
-        calls = parsed_obj.get("calls")
-        if not isinstance(calls, list):
-            return False
-        return any(isinstance(c, dict) and str(c.get("tool_name") or "") in downstream for c in calls)
-    return False
-
-
-def _distortion_gate_wants_correction(decision: Dict[str, Any]) -> bool:
-    d = decision.get("decision") if isinstance(decision, dict) else None
-    if not isinstance(d, dict):
-        return False
-    return bool(d.get("should_run_correction"))
-
-
-def _distortion_gate_for_policy_action(
-    run: LangGraphRunCtx,
-    parsed_obj: Dict[str, Any],
-) -> Tuple[Dict[str, Any], Optional[str]]:
-    if not _should_consider_distortion_gate(run, parsed_obj):
-        return parsed_obj, None
-
-    # Track 2 arm override: short-circuit the VLM gate entirely.
-    override = getattr(run, "distortion_gate_override", None)
-    if override == "off":
-        _write_gate_trace(run.tool_ctx.run_dir, {
-            "ts": datetime.utcnow().isoformat() + "Z",
-            "gate": "distortion",
-            "decision": "pass",
-            "override": "off",
-            "action_taken": "passthrough",
-            "original_action": parsed_obj.get("tool_name") or parsed_obj.get("action"),
-        })
-        return parsed_obj, None
-    if override == "forced_on":
-        attempted, succeeded = _tool_attempt_status(Path(run.tool_ctx.case_state_path), "correct_prostate_distortion")
-        if attempted or succeeded:
-            return parsed_obj, None
-        _write_gate_trace(run.tool_ctx.run_dir, {
-            "ts": datetime.utcnow().isoformat() + "Z",
-            "gate": "distortion",
-            "decision": "correct",
-            "override": "forced_on",
-            "action_taken": "correct_prostate_distortion",
-            "original_action": parsed_obj.get("tool_name") or parsed_obj.get("action"),
-        })
-        return {
-            "action": "tool_call",
-            "tool_name": "correct_prostate_distortion",
-            "arguments": {
-                "output_subdir": "distortion_correction",
-                "strength": 0.3,
-                "save_npz": True,
-                "save_slices": True,
-            },
-            "stage": "register",
-        }, "distortion_gate_forced_on"
-
-    attempted, succeeded = _tool_attempt_status(Path(run.tool_ctx.case_state_path), "correct_prostate_distortion")
-    if attempted or succeeded:
-        return parsed_obj, None
-
-    decision = _load_distortion_gate_decision(run.tool_ctx.run_dir)
-    images: List[Dict[str, Any]] = []
-    if decision is None:
-        images = _collect_distortion_gate_images(run.tool_ctx.run_dir)
-        ident = _latest_tool_data(run.tool_ctx.case_state_path, "identify", "identify_sequences") or {}
-        payload = {
-            "case_id": run.case_id,
-            "run_id": run.run_id,
-            "mapping": ident.get("mapping") if isinstance(ident, dict) else {},
-            "registration_history": _registration_summaries_for_distortion(Path(run.tool_ctx.case_state_path)),
-            "image_manifest": images,
-            "instruction": "Decide if prostate distortion correction should run before lesion/reporting tools.",
-        }
-        if not images:
-            decision = {
-                "decision": {
-                    "should_run_correction": False,
-                    "confidence": 0.0,
-                    "reasons": ["no_registration_qc_images_available"],
-                },
-                "overall": {"note": "distortion gate skipped due to missing QC images."},
-            }
-        else:
-            res = run.distortion_gate.decide(payload=payload, image_paths=images, use_schema=False)
-            decision = res.parsed or {
-                "decision": {
-                    "should_run_correction": False,
-                    "confidence": 0.1,
-                    "reasons": ["distortion_gate_parse_failed"],
-                },
-                "overall": {"note": str(res.error or "distortion gate parse failed")},
-            }
-        _write_distortion_gate_decision(run.tool_ctx.run_dir, decision)
-
-    d_inner = decision.get("decision", {}) if isinstance(decision, dict) else {}
-    wants_correction = _distortion_gate_wants_correction(decision)
-
-    _write_gate_trace(run.tool_ctx.run_dir, {
-        "ts": datetime.utcnow().isoformat() + "Z",
-        "gate": "distortion",
-        "decision": "correct" if wants_correction else "pass",
-        "should_run_correction": wants_correction,
-        "confidence": d_inner.get("confidence") if isinstance(d_inner, dict) else None,
-        "reasons": d_inner.get("reasons") if isinstance(d_inner, dict) else None,
-        "images_analyzed": len(images),
-        "action_taken": "correct_prostate_distortion" if wants_correction else "passthrough",
-        "original_action": parsed_obj.get("tool_name") or parsed_obj.get("action"),
-    })
-
-    if not isinstance(decision, dict) or not wants_correction:
-        return parsed_obj, None
-
-    return {
-        "action": "tool_call",
-        "tool_name": "correct_prostate_distortion",
-        "arguments": {
-            "output_subdir": "distortion_correction",
-            "strength": 0.3,
-            "save_npz": True,
-            "save_slices": True,
-        },
-        "stage": "register",
-    }, "distortion_gate_inserted_correction"
 
 
 def _summarize_message_content(content: Any) -> Any:
@@ -5086,13 +4863,6 @@ def _llm_policy_node(run: LangGraphRunCtx, st: LGState) -> LGState:
                 parsed_obj = gated_calls_obj
                 err = (str(err) + f" | {calls_note}") if err and calls_note else calls_note or err
 
-    # Distortion gate for prostate (VLM image-read decision before lesion/report tools).
-    if isinstance(parsed_obj, dict):
-        dist_obj, dist_note = _distortion_gate_for_policy_action(run, parsed_obj)
-        if dist_obj is not parsed_obj:
-            parsed_obj = dist_obj
-            err = (str(err) + f" | {dist_note}") if err and dist_note else dist_note or err
-
     _write_message_trace(
         run.tool_ctx.run_dir,
         {"ts": datetime.utcnow().isoformat() + "Z", "tag": "policy_response", "step": step, "model_output": raw},
@@ -5380,40 +5150,6 @@ def _tool_exec_node(run: LangGraphRunCtx, st: LGState) -> LGState:
     if tool_name == "detect_lesion_candidates":
         repaired_args.setdefault("threshold", float(run.lesion_threshold_default))
         repaired_args.setdefault("min_volume_cc", float(run.lesion_min_volume_cc))
-        # Hard data-flow handoff: if distortion correction succeeded, force downstream lesion inputs
-        # to corrected artifacts regardless of LLM-proposed stale paths.
-        try:
-            dist = _latest_tool_data(Path(run.tool_ctx.case_state_path), "register", "correct_prostate_distortion")
-            if isinstance(dist, dict):
-                forced_paths: Dict[str, str] = {}
-                corr_t2 = str(dist.get("t2w_nifti") or "").strip()
-                corr_adc = str(dist.get("corrected_adc_nifti") or "").strip()
-                corr_highb = str(dist.get("corrected_highb_nifti") or "").strip()
-                if (not corr_t2) or (not Path(corr_t2).exists()):
-                    seg = _latest_tool_data(Path(run.tool_ctx.case_state_path), "segment", "segment_prostate")
-                    if isinstance(seg, dict):
-                        corr_t2 = str(seg.get("t2w_input_path") or "").strip()
-                if corr_t2 and Path(corr_t2).exists():
-                    repaired_args["t2w_nifti"] = corr_t2
-                    forced_paths["t2w_nifti"] = corr_t2
-                if corr_adc and Path(corr_adc).exists():
-                    repaired_args["adc_nifti"] = corr_adc
-                    forced_paths["adc_nifti"] = corr_adc
-                if corr_highb and Path(corr_highb).exists():
-                    repaired_args["highb_nifti"] = corr_highb
-                    forced_paths["highb_nifti"] = corr_highb
-                if forced_paths:
-                    _write_agent_trace(
-                        run.tool_ctx.run_dir,
-                        {
-                            "ts": datetime.utcnow().isoformat() + "Z",
-                            "tag": "distortion_handoff",
-                            "step": step,
-                            "forced_inputs": forced_paths,
-                        },
-                    )
-        except Exception:
-            pass
 
     call = ToolCall(
         tool_name=tool_name,
@@ -5785,7 +5521,6 @@ def run_langgraph_agent(
     lesion_threshold_adaptive: bool = True,
     lesion_threshold_candidates: Optional[List[float]] = None,
     lesion_threshold_max_retries: int = 1,
-    distortion_gate_override: Optional[str] = None,
     progress_emit: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Path:
     if StateGraph is None:
@@ -5872,7 +5607,6 @@ def run_langgraph_agent(
     reflector = ReflectorSubagent(llm=llm)
     policy = PolicySubagent(llm=llm, parse_fn=parse_model_output, guided_schema=build_guided_schema(allow_tool_calls=True))
     alignment_gate = AlignmentGateSubagent(llm=llm)
-    distortion_gate = DistortionGateSubagent(llm=llm)
 
     run = LangGraphRunCtx(
         runs_root=runs_root,
@@ -5898,14 +5632,12 @@ def run_langgraph_agent(
         reflector=reflector,
         policy=policy,
         alignment_gate=alignment_gate,
-        distortion_gate=distortion_gate,
         domain=domain_cfg,
         lesion_threshold_default=float(lesion_threshold_default),
         lesion_min_volume_cc=float(lesion_min_volume_cc),
         lesion_threshold_adaptive=bool(lesion_threshold_adaptive),
         lesion_threshold_candidates=[float(x) for x in (lesion_threshold_candidates or [0.25, 0.2, 0.15, 0.12, 0.1, 0.08, 0.05])],
         lesion_threshold_max_retries=int(max(0, lesion_threshold_max_retries)),
-        distortion_gate_override=str(distortion_gate_override) if distortion_gate_override else None,
         progress_emit=progress_emit,
     )
 

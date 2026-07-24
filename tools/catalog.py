@@ -12,7 +12,6 @@ from .compare_nifti_slices import build_tool as build_compare_nifti_tool
 from .dicom_ingest import build_tools as build_dicom_tools
 from .generate_qa_snapshot import build_tool as build_qa_snapshot_tool
 from .materialize_registration import build_tool as build_materialize_registration_tool
-from .prostate_distortion_correction import build_tool as build_prostate_distortion_tool
 from .prostate_lesion_candidates import build_tool as build_lesion_candidates_tool
 from .prostate_segmentation import build_tool as build_segmentation_tool
 from .rag_search import build_tool as build_rag_search_tool
@@ -39,7 +38,6 @@ def build_registry(*, include_experimental: bool = True) -> ToolRegistry:
     reg.register(build_cardiac_cine_classification_tool())
     reg.register(build_feature_tool())
     reg.register(build_lesion_candidates_tool())
-    reg.register(build_prostate_distortion_tool())
     reg.register(build_package_vlm_evidence_tool())
     reg.register(build_report_tool())
     reg.register(build_bm3d_denoise_tool())

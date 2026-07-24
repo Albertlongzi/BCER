@@ -87,9 +87,18 @@ Need `torch` + `monai`. GPU recommended.
 | --- | --- |
 | `segment_prostate` | MONAI prostate zonal segmentation on T2w (CG/PZ + whole-gland mask) |
 | `brats_mri_segmentation` | MONAI BraTS tumour subregions (TC / WT / ET) on aligned 1 mm brain MRI |
-| `segment_cardiac_cine` | Cardiac cine LV/RV/myocardium segmentation (per-frame) |
+| `segment_cardiac_cine` | Cardiac cine LV/RV/myocardium segmentation (per-frame) via the vendored, self-contained nnUNet backend under `external/nnunet_phys_seg` |
 | `detect_lesion_candidates` | Prostate mpMRI lesion candidate detection from registered T2w + ADC + DWI |
-| `correct_prostate_distortion` | EPI/diffusion distortion correction (external diffusion backend) |
+
+The two MONAI bundle tools resolve their model bundle in this order: an explicit
+call argument (`bundle_dir` for `segment_prostate`, `bundle_root` for
+`brats_mri_segmentation`), then the environment override
+(`MRI_AGENT_PROSTATE_BUNDLE_DIR` / `MRI_AGENT_BRATS_BUNDLE_DIR`, which the
+subprocess dispatcher in `commands/tool_runtime.py` sets from
+`assets/models/...`), and finally the repo default path. These env vars are the
+supported knob for pointing the tools at a bundle stored outside the project; if
+the resolved bundle or its deps are missing, both tools fall back to a
+deterministic heuristic segmentation rather than failing.
 
 ### Reconstruction (Tier 2 — `envs/recon.yml`)
 

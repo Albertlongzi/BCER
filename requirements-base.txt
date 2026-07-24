@@ -2,9 +2,14 @@ pydicom>=2.4
 SimpleITK>=2.3
 numpy>=1.23,<2
 pillow>=10.0
+nibabel>=5.1
+scipy>=1.10
 PyYAML>=6.0
 jsonschema>=4.0
 openai>=1.0
 anthropic>=0.25
 google-generativeai>=0.5
 bm3d
+# Optional planner backend (LangGraph). agent/langgraph/loop.py imports it behind
+# a guarded try/except and falls back to the built-in loop when absent.
+# Install separately with:  pip install -r requirements-langgraph.txt

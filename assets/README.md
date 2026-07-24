@@ -20,12 +20,8 @@ assets/
     cardiac_nnunet/
       results/
   checkpoints/
-    prostate_distortion/
-      diff_t2cnn_clean_epoch_092.pt
-      mageultra_epoch_025.pt
   external/
     cmr_reverse/
-    Prostate_distortion_recover/
 ```
 
 Large checkpoints are intentionally not tracked in git. The release should

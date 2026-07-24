@@ -1,0 +1,38 @@
+# Conda environment for cardiac cine segmentation (segment_cardiac_cine).
+#
+# Inference-only subset of the vendored, Apache-2.0 physics-augmented nnUNet (V1)
+# backend under external/nnunet_phys_seg. No diffusers/transformers are needed.
+#
+# After creating the env, install the vendored backend in editable mode so that
+# `python -m nnunet.inference.predict_simple` resolves:
+#
+#   conda env create -f envs/cardiac.yml
+#   conda activate bcer-cardiac-seg
+#   pip install -e external/nnunet_phys_seg
+#
+# Point the tool at this interpreter via MRI_AGENT_CARDIAC_SEG_PYTHON (or run the
+# tool inside this env so it falls back to the current interpreter). Weights are
+# fetched separately into assets/models/cardiac_nnunet/results (RESULTS_FOLDER).
+name: bcer-cardiac-seg
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy<2
+  - scipy
+  - scikit-image>=0.21
+  - scikit-learn
+  - simpleitk
+  - nibabel
+  - pandas
+  - tqdm
+  - pyyaml
+  - jsonschema
+  - pytorch
+  - pytorch-cuda=12.1
+  - pip:
+      - batchgenerators>=0.23
+      - MedPy

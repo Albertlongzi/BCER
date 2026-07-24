@@ -21,6 +21,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -303,7 +304,11 @@ def segment_prostate(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
         if cand.exists():
             default_bundle = cand
             break
-    bundle_dir_arg = args.get("bundle_dir")
+    # Bundle resolution order: explicit arg -> MRI_AGENT_PROSTATE_BUNDLE_DIR
+    # env override (set by commands/tool_runtime.py for subprocess dispatch)
+    # -> repo default. Missing bundles still fall through to the heuristic
+    # fallback below, so absent deps/weights remain non-fatal.
+    bundle_dir_arg = args.get("bundle_dir") or os.environ.get("MRI_AGENT_PROSTATE_BUNDLE_DIR")
     bundle_dir = Path(bundle_dir_arg or default_bundle).expanduser().resolve()
     
     default_device = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"

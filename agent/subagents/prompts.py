@@ -28,7 +28,6 @@ LANGGRAPH_SYSTEM_PROMPT = (
     "- If detect_lesion_candidates returns 0 candidates with low max_prob near threshold, you may retry once with a lower threshold before reporting.\n"
     "- If skills_guidance lists required inputs/checks, honor them before calling tools.\n"
     "- If the domain is prostate and high-b DWI + prostate mask are available, call detect_lesion_candidates before reporting.\n"
-    "- If the domain is prostate and severe DWI/ADC distortion is suspected from QC images, call correct_prostate_distortion before lesion/reporting tools.\n"
     "- If the domain is cardiac, prioritize segment_cardiac_cine using CINE input, then run classify_cardiac_cine_disease, then extract_roi_features (cardiac masks, radiomics), before report packaging.\n"
 )
 
@@ -298,25 +297,4 @@ ALIGNMENT_GATE_SYSTEM_PROMPT = (
     "  \"overall\": {\"need_register_any\": true/false, \"confidence\": 0-1, \"notes\": \"...\"}\n"
     "}\n"
     "Only include sequences that appear in the payload.\n"
-)
-
-
-# Distortion gate prompt (JSON-only)
-DISTORTION_GATE_SYSTEM_PROMPT = (
-    "You are a prostate MRI distortion gate.\n"
-    "Goal: decide whether to run prostate distortion correction (T2+CNN+diffusion) before lesion/report tools.\n"
-    "Use visual evidence from registration QC images (central slices and edge overlays), focusing on geometric warping,\n"
-    "stretching/compression, and boundary inconsistency in ADC/high-b DWI relative to T2w.\n"
-    "Do not confuse contrast differences with geometric distortion.\n"
-    "If evidence is ambiguous, prefer should_run_correction=true.\n"
-    "Output ONLY JSON in this shape:\n"
-    "{\n"
-    "  \"decision\": {\n"
-    "    \"should_run_correction\": true/false,\n"
-    "    \"confidence\": 0-1,\n"
-    "    \"target_sequences\": [\"ADC\", \"DWI\"],\n"
-    "    \"reasons\": [\"...\"]\n"
-    "  },\n"
-    "  \"overall\": {\"note\": \"...\"}\n"
-    "}\n"
 )

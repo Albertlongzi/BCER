@@ -67,7 +67,7 @@ def _infer_tool_domains(name: str) -> List[str]:
         return list(_BASE_DOMAINS)
     if n in {"register_to_reference", "alignment_qc", "materialize_registration"}:
         return ["prostate", "brain"]
-    if n in {"segment_prostate", "detect_lesion_candidates", "correct_prostate_distortion"}:
+    if n in {"segment_prostate", "detect_lesion_candidates"}:
         return ["prostate"]
     if n in {"brats_mri_segmentation", "classify_brain_glioma_grade"}:
         return ["brain"]

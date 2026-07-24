@@ -605,7 +605,6 @@ def package_vlm_evidence(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
     card_cls_ok, card_cls = best_record("classify_cardiac_cine_disease")
     feat_ok, feat = best_record("extract_roi_features")
     les_ok, les = best_record("detect_lesion_candidates")
-    dist_ok, dist = best_record("correct_prostate_distortion")
     seg_data = seg if bool(seg_ok) else (card_seg if isinstance(card_seg, dict) else {})
     seg_any_ok = bool(seg_ok) or bool(card_seg_ok)
 
@@ -679,7 +678,6 @@ def package_vlm_evidence(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
             "extract_roi_features_ok": bool(feat_ok),
             "extract_roi_features_main_ok": bool(features_main.get("ok")),
             "extract_roi_features_lesion_ok": bool(features_lesion.get("ok")),
-            "correct_prostate_distortion_ok": bool(dist_ok),
             "sequences_present": present,
         },
         # Back-compat: `features` points to the primary (prefer main) set.
@@ -723,15 +721,6 @@ def package_vlm_evidence(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
             "lesion_mask_path_abs": (les.get("lesion_mask_path") if isinstance(les, dict) else None),
             "filter_stats": (les.get("filter_stats") if isinstance(les, dict) else None),
             "candidate_montages": (les.get("candidate_montages") if isinstance(les, dict) else None),
-        },
-        "distortion_correction": {
-            "ok": bool(dist_ok),
-            "out_dir": to_short_path((dist.get("out_dir") if isinstance(dist, dict) else None), run_dir=run_dir),
-            "out_dir_abs": (dist.get("out_dir") if isinstance(dist, dict) else None),
-            "summary_json_path": to_short_path((dist.get("summary_json_path") if isinstance(dist, dict) else None), run_dir=run_dir),
-            "summary_json_path_abs": (dist.get("summary_json_path") if isinstance(dist, dict) else None),
-            "num_pred_npz": (dist.get("num_pred_npz") if isinstance(dist, dict) else None),
-            "num_panel_png": (dist.get("num_panel_png") if isinstance(dist, dict) else None),
         },
         "lesion_geometry": _compute_lesion_geometry(
             lesion_mask_path=(les.get("lesion_mask_path") if isinstance(les, dict) else None),
@@ -796,7 +785,6 @@ def package_vlm_evidence(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
             "segmentation": evidence_bundle.get("segmentation", {}),
             "cardiac_classification": evidence_bundle.get("cardiac_classification", {}),
             "lesion_candidates": evidence_bundle.get("lesion_candidates", {}),
-            "distortion_correction": evidence_bundle.get("distortion_correction", {}),
             "features": evidence_bundle.get("features", {}),
             "features_main": evidence_bundle.get("features_main", {}),
             "features_lesion": evidence_bundle.get("features_lesion", {}),

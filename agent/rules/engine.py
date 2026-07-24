@@ -427,31 +427,6 @@ def validate_tool_call(call: ToolCall, case_state_path: Path) -> List[RuleViolat
                 )
             )
 
-    if tool_name == "correct_prostate_distortion":
-        for key in ("t2w_nifti", "adc_nifti", "highb_nifti"):
-            v = str(args.get(key) or "").strip()
-            if not v:
-                violations.append(
-                    RuleViolation(
-                        rule_id=f"distortion_{key}_required",
-                        level="hard",
-                        tool_name=tool_name,
-                        message=f"{key} is required.",
-                        details={key: v},
-                    )
-                )
-                continue
-            if not _path_exists(v):
-                violations.append(
-                    RuleViolation(
-                        rule_id=f"distortion_{key}_missing",
-                        level="hard",
-                        tool_name=tool_name,
-                        message=f"{key} does not exist on disk.",
-                        details={key: v},
-                    )
-                )
-
     if tool_name == "package_vlm_evidence":
         # Soft reminder: ensure case_state_path provided for deterministic packaging
         if not args.get("case_state_path"):
