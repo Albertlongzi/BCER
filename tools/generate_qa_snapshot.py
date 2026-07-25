@@ -13,6 +13,15 @@ robust, deterministic replacement for sandbox_exec-based visualisation.
 
 3-D handling:
     Select the centre axial slice directly.
+
+Mask-centred framing:
+    When a mask is supplied and the selected slice actually carries labels, the
+    preview is cropped to the labelled region plus a margin so the structure
+    fills the frame instead of being a few dozen pixels inside a full field of
+    view.  Physical proportions are preserved (the crop box is squared in
+    millimetres, and the voxel-spacing aspect is still applied), and the crop
+    degrades to the full field of view whenever there is no mask, the mask is
+    empty on this slice, or the mask grid does not match the anatomy grid.
 """
 
 from __future__ import annotations
@@ -62,6 +71,27 @@ QA_SNAPSHOT_SPEC = ToolSpec(
                     "overlay.  Takes priority over mask_nifti when available."
                 ),
             },
+            "crop_to_mask": {
+                "type": "boolean",
+                "description": (
+                    "Crop the preview to the labelled region plus a margin so the "
+                    "segmented structure fills the frame (default: true).  Only has "
+                    "any effect when a mask is supplied AND the selected slice "
+                    "carries non-zero labels; with no mask, an empty mask, or a mask "
+                    "whose grid does not match the anatomy, the full field of view is "
+                    "rendered exactly as before.  Set false to force the full field "
+                    "of view even when a mask is present."
+                ),
+                "default": True,
+            },
+            "crop_margin_frac": {
+                "type": "number",
+                "description": (
+                    "Margin added around the mask bounding box before cropping, as a "
+                    "fraction of the box's longer physical side (default: 0.35)."
+                ),
+                "default": 0.35,
+            },
             "title": {
                 "type": "string",
                 "description": "Optional title displayed on the snapshot.",
@@ -91,10 +121,12 @@ QA_SNAPSHOT_SPEC = ToolSpec(
             "volume_shape": {"type": "array"},
             "selected_frame": {"type": "integer"},
             "selected_slice": {"type": "integer"},
+            "crop": {"type": "object"},
+            "png_size": {"type": "array"},
             "elapsed_seconds": {"type": "number"},
         },
     },
-    version="0.2.0",
+    version="0.3.0",
     tags=["qa", "visualisation", "snapshot", "overlay"],
 )
 
@@ -115,9 +147,96 @@ def _require_deps():
     return np, nib, plt
 
 
+def compute_mask_crop_box(
+    mask_2d,
+    *,
+    np,
+    spacing_xy: tuple,
+    margin_frac: float = 0.35,
+    min_size: int = 8,
+):
+    """Bounding box of the labelled region, padded and squared in millimetres.
+
+    Parameters
+    ----------
+    mask_2d : 2-D array in (x, y) index order, same grid as the anatomy slice.
+    spacing_xy : (sx, sy) voxel size in mm; used so the box is square in
+        *physical* space rather than in voxels, which keeps the anatomy from
+        being framed into a sliver on anisotropic grids.
+    margin_frac : padding around the label box as a fraction of its longer
+        physical side.
+    min_size : refuse to return a box smaller than this in either axis; the
+        caller then falls back to the full field of view.
+
+    Returns ``(x0, x1, y0, y1)`` as half-open index bounds, or ``None`` when
+    there is nothing to crop to (empty mask, degenerate result).
+    """
+    if mask_2d is None or getattr(mask_2d, "ndim", 0) != 2:
+        return None
+    nx, ny = int(mask_2d.shape[0]), int(mask_2d.shape[1])
+    if nx < min_size or ny < min_size:
+        return None
+
+    labelled = np.asarray(mask_2d) > 0
+    if not bool(labelled.any()):
+        return None
+
+    xs = np.flatnonzero(labelled.any(axis=1))
+    ys = np.flatnonzero(labelled.any(axis=0))
+    x0, x1 = int(xs[0]), int(xs[-1]) + 1
+    y0, y1 = int(ys[0]), int(ys[-1]) + 1
+
+    sx = float(spacing_xy[0]) if spacing_xy and spacing_xy[0] > 1e-9 else 1.0
+    sy = float(spacing_xy[1]) if len(spacing_xy) > 1 and spacing_xy[1] > 1e-9 else 1.0
+
+    width_mm = (x1 - x0) * sx
+    height_mm = (y1 - y0) * sy
+    side_mm = max(width_mm, height_mm)
+    if side_mm <= 0:
+        return None
+    # Margin first, then square the box in millimetres so the rendered frame is
+    # not stretched: matplotlib still draws it with the physical aspect ratio.
+    side_mm *= 1.0 + 2.0 * max(0.0, float(margin_frac))
+
+    def _expand(lo: int, hi: int, n: int, spacing: float) -> tuple:
+        want = int(np.ceil(side_mm / spacing))
+        want = max(want, hi - lo)
+        want = min(want, n)
+        centre = (lo + hi) / 2.0
+        new_lo = int(round(centre - want / 2.0))
+        new_lo = max(0, min(new_lo, n - want))
+        return new_lo, new_lo + want
+
+    cx0, cx1 = _expand(x0, x1, nx, sx)
+    cy0, cy1 = _expand(y0, y1, ny, sy)
+
+    if (cx1 - cx0) < min_size or (cy1 - cy0) < min_size:
+        return None
+    if (cx1 - cx0) >= nx and (cy1 - cy0) >= ny:
+        # Box already covers everything: nothing gained, and reporting it as a
+        # crop would overstate what happened.
+        return None
+    return cx0, cx1, cy0, cy1
+
+
+def _label_overlay_cmap(plt, np, n_labels: int, alpha: float = 0.45):
+    """Discrete colour map where label 0 is transparent and 1+ are distinct."""
+    from matplotlib.colors import ListedColormap  # noqa: E402
+
+    try:
+        base_cmap = plt.get_cmap("tab10")
+    except Exception:  # pragma: no cover - very old matplotlib
+        base_cmap = plt.cm.get_cmap("tab10", 10)
+    overlay_colors = np.zeros((n_labels, 4))
+    for lbl in range(1, n_labels):
+        # Integer indices address the 10-entry lookup table directly.
+        rgba = base_cmap((lbl - 1) % 10)
+        overlay_colors[lbl] = (*rgba[:3], alpha)
+    return ListedColormap(overlay_colors)
+
+
 def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     np, nib, plt = _require_deps()
-    from matplotlib.colors import ListedColormap  # noqa: E402
     t0 = time.time()
 
     input_path = Path(str(args.get("input_nifti", ""))).expanduser().resolve()
@@ -139,6 +258,17 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
         if not mask_path.exists():
             logger.warning("Mask NIfTI not found (%s); overlay will be skipped.", mask_path)
             mask_path = None
+
+    crop_to_mask = bool(args.get("crop_to_mask", True))
+    try:
+        crop_margin_frac = float(args.get("crop_margin_frac", 0.35))
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "error": f"crop_margin_frac must be a number, got {args.get('crop_margin_frac')!r}",
+        }
+    if crop_margin_frac < 0:
+        return {"ok": False, "error": f"crop_margin_frac must be >= 0, got {crop_margin_frac}"}
 
     title = str(args.get("title", "")).strip()
     output_subdir = str(args.get("output_subdir", "qa")).strip() or "qa"
@@ -253,6 +383,71 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
     sp_y = float(zooms[1]) if len(zooms) > 1 else 1.0
     aspect = sp_y / sp_x if sp_x > 1e-12 else 1.0
 
+    # ---- Crop the frame to the labelled region so the structure fills it ----
+    # Every branch that declines to crop records why, and leaves the full field
+    # of view exactly as previous versions rendered it.
+    crop_meta: Dict[str, Any] = {
+        "applied": False,
+        "requested": crop_to_mask,
+        "margin_frac": crop_margin_frac,
+        "shape_before": [int(slice_2d.shape[0]), int(slice_2d.shape[1])],
+        "shape_after": [int(slice_2d.shape[0]), int(slice_2d.shape[1])],
+    }
+    if mask_slice_2d is not None:
+        labelled_before = int(np.count_nonzero(np.asarray(mask_slice_2d) > 0))
+        crop_meta["labelled_voxels"] = labelled_before
+        crop_meta["labelled_fraction_before"] = round(
+            labelled_before / float(max(1, mask_slice_2d.size)), 6
+        )
+
+    if not crop_to_mask:
+        crop_meta["reason"] = "crop_to_mask=false"
+    elif mask_slice_2d is None:
+        crop_meta["reason"] = "no mask slice available"
+    elif tuple(mask_slice_2d.shape) != tuple(slice_2d.shape):
+        crop_meta["reason"] = (
+            f"mask grid {tuple(int(v) for v in mask_slice_2d.shape)} does not match anatomy grid "
+            f"{tuple(int(v) for v in slice_2d.shape)}"
+        )
+        logger.warning("Mask-centred crop skipped: %s", crop_meta["reason"])
+    else:
+        box = compute_mask_crop_box(
+            mask_slice_2d,
+            np=np,
+            spacing_xy=(sp_x, sp_y),
+            margin_frac=crop_margin_frac,
+        )
+        if box is None:
+            crop_meta["reason"] = (
+                "mask is empty on the selected slice"
+                if not bool(np.any(np.asarray(mask_slice_2d) > 0))
+                else "mask bounding box plus margin already covers the whole frame"
+            )
+        else:
+            x0, x1, y0, y1 = box
+            slice_2d = slice_2d[x0:x1, y0:y1]
+            mask_slice_2d = mask_slice_2d[x0:x1, y0:y1]
+            crop_meta.update(
+                {
+                    "applied": True,
+                    "bbox_x": [int(x0), int(x1)],
+                    "bbox_y": [int(y0), int(y1)],
+                    "shape_after": [int(x1 - x0), int(y1 - y0)],
+                    "labelled_fraction_after": round(
+                        int(np.count_nonzero(np.asarray(mask_slice_2d) > 0))
+                        / float(max(1, mask_slice_2d.size)),
+                        6,
+                    ),
+                }
+            )
+            logger.info(
+                "Mask-centred crop: %s -> %s (labelled fraction %.4f -> %.4f)",
+                crop_meta["shape_before"],
+                crop_meta["shape_after"],
+                crop_meta.get("labelled_fraction_before", 0.0),
+                crop_meta["labelled_fraction_after"],
+            )
+
     # Plot
     fig, ax = plt.subplots(1, 1, figsize=(6, 6))
     ax.imshow(slice_2d.T, cmap="gray", origin="lower", aspect=aspect)
@@ -263,13 +458,7 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
         # Build a colour map: label 0 → fully transparent; labels 1+ → distinct colours
         unique_labels = np.unique(mask_t)
         n_labels = max(int(unique_labels.max()), 1) + 1
-        # Use tab10 (up to 10 distinct colours) cycled
-        base_cmap = plt.cm.get_cmap("tab10", 10)
-        overlay_colors = np.zeros((n_labels, 4))
-        for lbl in range(1, n_labels):
-            rgba = base_cmap((lbl - 1) % 10)
-            overlay_colors[lbl] = (*rgba[:3], 0.45)
-        overlay_cmap = ListedColormap(overlay_colors)
+        overlay_cmap = _label_overlay_cmap(plt, np, n_labels)
         ax.imshow(
             mask_t,
             cmap=overlay_cmap,
@@ -290,6 +479,10 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
         info_parts.append(f"slice={selected_slice}")
         if mask_slice_2d is not None:
             info_parts.append("mask overlay")
+        if crop_meta.get("applied"):
+            info_parts.append(
+                "cropped to mask {}x{}".format(*crop_meta["shape_after"])
+            )
         ax.set_title(" | ".join(info_parts), fontsize=10)
     ax.axis("off")
 
@@ -297,12 +490,23 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
     fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
     plt.close(fig)
 
+    png_size: List[int] = []
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(str(output_path)) as im:
+            png_size = [int(im.size[0]), int(im.size[1])]
+    except Exception as exc:  # pragma: no cover - Pillow ships with matplotlib
+        logger.debug("Could not read back PNG dimensions: %s", exc)
+
     elapsed = time.time() - t0
     artifacts: List[ArtifactRef] = [
         ArtifactRef(
             path=str(output_path),
             kind="png",
-            description="QA snapshot of centre slice" + (" with mask overlay" if mask_slice_2d is not None else ""),
+            description="QA snapshot of centre slice"
+            + (" with mask overlay" if mask_slice_2d is not None else "")
+            + (" (cropped to the labelled region)" if crop_meta.get("applied") else ""),
         ),
     ]
 
@@ -315,6 +519,8 @@ def generate_qa_snapshot(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, An
             "volume_shape": vol_shape,
             "selected_frame": selected_frame,
             "selected_slice": selected_slice,
+            "crop": crop_meta,
+            "png_size": png_size,
             "elapsed_seconds": round(elapsed, 3),
         },
         "generated_artifacts": artifacts,

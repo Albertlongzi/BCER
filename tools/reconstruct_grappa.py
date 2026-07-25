@@ -15,6 +15,10 @@ Pipeline
 3. Fallback image mode:
    - Locate real-valued image dataset (e.g. `image`, `reconstruction_rss`).
    - Convert directly to NIfTI.
+4. Optional readout-oversampling crop (off by default, see the
+   "Readout oversampling crop" section below): keeps the central portion of
+   the readout axis, translates the NIfTI origin by the discarded offset, and
+   reports every number in the `readout_crop` output block.
 
 Memory management
 -----------------
@@ -138,6 +142,51 @@ GRAPPA_SPEC = ToolSpec(
                     "to 'zerofilled_<stem>.nii.gz' beside the reconstruction."
                 ),
             },
+            "readout_fov_mm": {
+                "type": "number",
+                "description": (
+                    "Crop readout oversampling by keeping the central "
+                    "`readout_fov_mm` millimetres of the readout axis and "
+                    "discarding the rest symmetrically.  Requires a known readout "
+                    "spacing (pass `pixel_spacing`, or have the H5 carry one) -- "
+                    "the tool refuses rather than assuming 1 mm.  Off by default; "
+                    "mutually exclusive with readout_oversampling and "
+                    "readout_crop_samples.  Whatever is cropped is reported in the "
+                    "`readout_crop` output block.  NOTE: the HDF5 `encoding_size` / "
+                    "`recon_size` attributes report the UNCROPPED readout width on "
+                    "CMRxRecon data, so they cannot be used to detect oversampling; "
+                    "supply the vendor's FOV instead."
+                ),
+            },
+            "readout_oversampling": {
+                "type": "number",
+                "description": (
+                    "Crop readout oversampling by an explicit factor (e.g. 2.0 for "
+                    "the usual 2x readout oversampling): the retained width is "
+                    "round(samples / factor), centred.  Must be > 1.  Off by "
+                    "default; mutually exclusive with readout_fov_mm and "
+                    "readout_crop_samples."
+                ),
+            },
+            "readout_crop_samples": {
+                "type": "integer",
+                "description": (
+                    "Crop the readout axis to exactly this many centred samples.  "
+                    "Off by default; mutually exclusive with readout_fov_mm and "
+                    "readout_oversampling."
+                ),
+            },
+            "readout_axis": {
+                "type": "integer",
+                "description": (
+                    "Index of the readout axis in the OUTPUT volume (default 0).  In "
+                    "GRAPPA mode the output is built as (kx, ky, ...) so the readout "
+                    "is axis 0.  In image_passthrough mode the axis order comes from "
+                    "the H5 dataset layout, so confirm against the reported "
+                    "`readout_crop.samples_before` before trusting the default."
+                ),
+                "default": 0,
+            },
             "output_nifti": {
                 "type": "string",
                 "description": (
@@ -174,6 +223,7 @@ GRAPPA_SPEC = ToolSpec(
             "n_coils": {"type": "integer"},
             "acs_lines_used": {"type": "integer"},
             "undersample": {"type": "object"},
+            "readout_crop": {"type": "object"},
             "elapsed_seconds": {"type": "number"},
         },
     },
@@ -628,13 +678,20 @@ def _ifft2_rss(kspace_frame):
     return magnitude
 
 
-def _parse_spacing(h5file, pixel_spacing_arg: Optional[list]) -> List[float]:
-    """Try to get voxel spacing from H5 attrs or user arg; fall back to 1mm."""
+def _parse_spacing(h5file, pixel_spacing_arg: Optional[list]) -> Tuple[List[float], str]:
+    """Get voxel spacing from the user arg or H5 attrs; fall back to 1 mm.
+
+    Returns ``(spacing, source)`` where *source* is one of ``"argument"``,
+    ``"h5_attr:<name>"`` or ``"default"``.  Callers that convert millimetres to
+    samples (readout cropping) must refuse to do so when the source is
+    ``"default"``: a placeholder 1 mm would silently turn a millimetre request
+    into a sample count.
+    """
     if pixel_spacing_arg:
         sp = [float(s) for s in pixel_spacing_arg]
         while len(sp) < 3:
             sp.append(1.0)
-        return sp[:3]
+        return sp[:3], "argument"
     # Try common attribute names
     for attr_name in ("pixel_spacing", "pixelSpacing", "spacing",
                       "voxel_size", "resolution"):
@@ -644,17 +701,194 @@ def _parse_spacing(h5file, pixel_spacing_arg: Optional[list]) -> List[float]:
                 sp = [float(v) for v in val]
                 while len(sp) < 3:
                     sp.append(1.0)
-                return sp[:3]
+                return sp[:3], f"h5_attr:{attr_name}"
             except Exception:
                 pass
-    return [1.0, 1.0, 1.0]
+    return [1.0, 1.0, 1.0], "default"
 
 
-def _save_volume_as_nifti(*, vol, spacing: List[float], output_path: Path, np) -> Optional[str]:
+# ---------------------------------------------------------------------------
+# Readout oversampling crop
+# ---------------------------------------------------------------------------
+#
+# Frequency-encoded (readout) axes are routinely acquired with 2x oversampling:
+# the vendor doubles the readout FOV to push aliasing out of the imaged region,
+# at no scan-time cost.  The reconstruction therefore comes out with a readout
+# FOV twice the prescribed one -- black bands and fold-over blobs either side of
+# the anatomy -- unless the outer half is discarded.
+#
+# This is done deliberately, never by guesswork:
+#   * the caller states the true readout FOV in mm, an explicit oversampling
+#     factor, or an explicit sample count;
+#   * the crop is symmetric about the FFT centre;
+#   * the NIfTI origin is translated by the discarded left offset so the
+#     retained block keeps its world position;
+#   * everything that happened is echoed in the `readout_crop` output block.
+#
+# The HDF5 `encoding_size` / `recon_size` attributes are NOT usable as a
+# detector: on CMRxRecon cine data both report the *uncropped* readout width
+# (418 for a 208-sample recon matrix), so trusting them would leave the
+# oversampling in place while looking authoritative.
+
+# Advisory threshold for `outer_half_energy_fraction`, calibrated on the
+# Center006_Siemens_30T_Prisma_P017_cine_sax vendor reconstruction:
+#   readout axis, uncropped (418 samples, 804 mm FOV) -> 0.0231
+#   readout axis, cropped to the vendor FOV (208, 400 mm) -> 0.2835
+#   phase axis (162 samples, no oversampling at all)      -> 0.4567
+# 0.10 sits between the oversampled case and both non-oversampled cases with a
+# 4x margin either side.  It only ever raises a warning naming the explicit
+# switches -- nothing is cropped without the caller asking.
+_OUTER_FOV_ENERGY_HINT = 0.10
+
+# A requested crop that removes less than this fraction of the axis is treated as
+# a mis-aimed readout_axis rather than an intended crop.  Real readout
+# oversampling removes ~50%; the observed wrong-axis case removed 1.2%.
+_MIN_MEANINGFUL_CROP_FRACTION = 0.05
+
+
+def _resolve_readout_crop_target(
+    *,
+    samples: int,
+    spacing_mm: float,
+    spacing_source: str,
+    fov_mm: Optional[float],
+    oversampling: Optional[float],
+    crop_samples: Optional[int],
+) -> Tuple[Optional[int], Dict[str, Any]]:
+    """Resolve the requested readout crop to a centred target width.
+
+    Returns ``(target_samples, request_meta)``.  ``target_samples`` is None when
+    no crop was requested.  Raises ValueError for contradictory or impossible
+    requests -- this never falls back to "do nothing quietly".
+    """
+    requested = [
+        ("readout_fov_mm", fov_mm),
+        ("readout_oversampling", oversampling),
+        ("readout_crop_samples", crop_samples),
+    ]
+    given = [(name, val) for name, val in requested if val is not None]
+    if not given:
+        return None, {"mode": "none"}
+    if len(given) > 1:
+        raise ValueError(
+            "readout crop is over-specified: "
+            + ", ".join(f"{n}={v!r}" for n, v in given)
+            + " -- pass exactly one of readout_fov_mm, readout_oversampling, readout_crop_samples"
+        )
+
+    mode, value = given[0]
+    if mode == "readout_fov_mm":
+        fov = float(value)
+        if fov <= 0:
+            raise ValueError(f"readout_fov_mm must be > 0, got {fov}")
+        if spacing_source == "default":
+            raise ValueError(
+                "readout_fov_mm needs a known readout spacing, but none was supplied and "
+                "none could be parsed from the HDF5 attributes (the fallback is a "
+                "placeholder 1.0 mm).  Pass pixel_spacing, or use readout_oversampling / "
+                "readout_crop_samples instead."
+            )
+        if spacing_mm <= 0:
+            raise ValueError(f"readout spacing must be > 0 to honour readout_fov_mm, got {spacing_mm}")
+        target = int(round(fov / float(spacing_mm)))
+        meta: Dict[str, Any] = {"mode": "fov_mm", "requested_fov_mm": fov}
+    elif mode == "readout_oversampling":
+        factor = float(value)
+        if factor <= 1.0:
+            raise ValueError(
+                f"readout_oversampling must be > 1 (got {factor}); omit it when the readout "
+                "axis carries no oversampling"
+            )
+        target = int(round(float(samples) / factor))
+        meta = {"mode": "oversampling_factor", "requested_oversampling": factor}
+    else:
+        target = int(value)
+        meta = {"mode": "target_samples", "requested_samples": target}
+
+    if target < 1:
+        raise ValueError(
+            f"readout crop resolved to {target} samples from {mode}={value!r} (axis has {samples})"
+        )
+    if target > samples:
+        raise ValueError(
+            f"readout crop resolved to {target} samples from {mode}={value!r}, which is wider "
+            f"than the {samples} samples actually present on the readout axis"
+        )
+    # A crop that trims only a sliver is almost always readout_axis pointing at
+    # the wrong axis: asking for a 400 mm readout FOV while axis=0 addresses the
+    # 162-sample phase axis removes 2 samples, succeeds, and leaves the actually
+    # oversampled 418-sample axis untouched -- the exact defect this parameter
+    # exists to fix, reported as a success.
+    removed_frac = 1.0 - (float(target) / float(samples))
+    if 0.0 < removed_frac < _MIN_MEANINGFUL_CROP_FRACTION:
+        raise ValueError(
+            f"readout crop from {mode}={value!r} would remove only {removed_frac:.1%} of the "
+            f"{samples}-sample axis ({samples} -> {target}). That is almost always readout_axis "
+            f"addressing the wrong axis rather than a real oversampling crop. Check readout_axis, "
+            f"or pass readout_crop_samples explicitly if this really is intended."
+        )
+    return target, meta
+
+
+def _crop_readout(vol, *, axis: int, target: int, np):
+    """Symmetrically crop *vol* along *axis* to *target* samples about the centre.
+
+    Returns ``(cropped, start, stop)``.  The centre index used by
+    ``_ifft2_rss`` (``n // 2``) is preserved: with ``start = (n - target) // 2``
+    and both sizes even, ``n // 2 - start == target // 2``.
+    """
+    n = int(vol.shape[axis])
+    start = (n - int(target)) // 2
+    stop = start + int(target)
+    selector: List[Any] = [slice(None)] * vol.ndim
+    selector[axis] = slice(start, stop)
+    return np.ascontiguousarray(vol[tuple(selector)]), start, stop
+
+
+def _outer_fov_energy_fraction(vol, *, axis: int, np) -> Optional[float]:
+    """Fraction of image energy lying outside the central half of *axis*.
+
+    A purely observational number: an uncropped 2x-oversampled readout puts
+    almost nothing in the outer half, so a very small value is *evidence* of
+    oversampling.  It is reported and never acted on -- the crop itself is only
+    ever driven by an explicit caller request.
+    """
+    n = int(vol.shape[axis])
+    if n < 4:
+        return None
+    energy = np.square(vol.astype(np.float64, copy=False))
+    total = float(energy.sum())
+    if total <= 0.0:
+        return None
+    quarter = n // 4
+    selector: List[Any] = [slice(None)] * vol.ndim
+    selector[axis] = slice(quarter, n - quarter)
+    inner = float(energy[tuple(selector)].sum())
+    return round(max(0.0, 1.0 - inner / total), 6)
+
+
+def _save_volume_as_nifti(
+    *,
+    vol,
+    spacing: List[float],
+    output_path: Path,
+    np,
+    origin: Optional[List[float]] = None,
+) -> Optional[str]:
     """
     Save volume shaped as (x, y, z[, t]) to NIfTI.
+
+    *origin* is the world position of voxel (0, 0, 0) in mm.  It stays at the
+    default zero for uncropped volumes; readout cropping passes the offset of
+    the retained block so the anatomy keeps its world position instead of
+    sliding by half the discarded FOV.
+
     Returns None on success, or error message on failure.
     """
+    origin3 = [0.0, 0.0, 0.0]
+    if origin:
+        for i, val in enumerate(origin[:3]):
+            origin3[i] = float(val)
     try:
         import SimpleITK as sitk  # type: ignore
     except ImportError:
@@ -663,6 +897,8 @@ def _save_volume_as_nifti(*, vol, spacing: List[float], output_path: Path, np) -
             nii_affine = np.eye(4)
             for i, sp in enumerate(spacing[: min(3, len(spacing))]):
                 nii_affine[i, i] = sp
+            for i, org in enumerate(origin3):
+                nii_affine[i, 3] = org
             nii_img = nib.Nifti1Image(vol, affine=nii_affine)
             nib.save(nii_img, str(output_path))
             return None
@@ -686,7 +922,10 @@ def _save_volume_as_nifti(*, vol, spacing: List[float], output_path: Path, np) -
         while len(padded_spacing) < ndim:
             padded_spacing.append(1.0)
         sitk_img.SetSpacing(padded_spacing[:ndim])
-        sitk_img.SetOrigin([0.0] * ndim)
+        padded_origin = list(origin3[:ndim])
+        while len(padded_origin) < ndim:
+            padded_origin.append(0.0)
+        sitk_img.SetOrigin(padded_origin[:ndim])
         sitk.WriteImage(sitk_img, str(output_path))
         return None
 
@@ -738,6 +977,24 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
                 "ok": False,
                 "error": f"undersample_factor must be >= 2 (got {undersample_factor}); omit it to reconstruct k-space as acquired",
             }
+
+    def _opt_number(key: str):
+        raw = args.get(key)
+        if raw is None:
+            return None
+        return float(raw)
+
+    try:
+        readout_fov_mm = _opt_number("readout_fov_mm")
+        readout_oversampling = _opt_number("readout_oversampling")
+        readout_crop_samples = args.get("readout_crop_samples")
+        if readout_crop_samples is not None:
+            readout_crop_samples = int(readout_crop_samples)
+        readout_axis = int(args.get("readout_axis", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        return {"ok": False, "error": f"invalid readout crop argument: {exc}"}
+    if readout_axis < 0:
+        return {"ok": False, "error": f"readout_axis must be >= 0, got {readout_axis}"}
 
     output_subdir_raw = str(args.get("output_subdir", "grappa") or "grappa").strip()
     output_subdir = output_subdir_raw.replace("\\", "/")
@@ -797,9 +1054,10 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     nonspatial_axes_used: List[int] = []
     nonspatial_order_used: List[int] = []
     spacing: List[float] = [1.0, 1.0, 1.0]
+    spacing_source = "default"
 
     try:
-        spacing = _parse_spacing(h5, args.get("pixel_spacing"))
+        spacing, spacing_source = _parse_spacing(h5, args.get("pixel_spacing"))
 
         ks_key: Optional[str] = None
         if kspace_key_arg:
@@ -1029,13 +1287,95 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     if output_vol is None:
         return {"ok": False, "error": "No output volume was produced from HDF5 input."}
 
-    save_err = _save_volume_as_nifti(vol=output_vol, spacing=spacing, output_path=output_path, np=np)
+    # ---- Readout oversampling crop (explicit, reported, never inferred) ----
+    if readout_axis >= output_vol.ndim:
+        return {
+            "ok": False,
+            "error": (
+                f"readout_axis={readout_axis} is out of range for the output volume "
+                f"shape {tuple(output_vol.shape)}"
+            ),
+        }
+    readout_samples_before = int(output_vol.shape[readout_axis])
+    readout_spacing = float(spacing[readout_axis]) if readout_axis < len(spacing) else 1.0
+    outer_fraction = _outer_fov_energy_fraction(output_vol, axis=readout_axis, np=np)
+    readout_crop_meta: Dict[str, Any] = {
+        "applied": False,
+        "mode": "none",
+        "axis": readout_axis,
+        "samples_before": readout_samples_before,
+        "samples_after": readout_samples_before,
+        "readout_spacing_mm": readout_spacing,
+        "readout_spacing_source": spacing_source,
+        "fov_before_mm": round(readout_samples_before * readout_spacing, 4),
+        "fov_after_mm": round(readout_samples_before * readout_spacing, 4),
+        "origin_shift_mm": 0.0,
+        "outer_half_energy_fraction": outer_fraction,
+    }
+    origin_out: List[float] = [0.0, 0.0, 0.0]
+
+    try:
+        crop_target, crop_request = _resolve_readout_crop_target(
+            samples=readout_samples_before,
+            spacing_mm=readout_spacing,
+            spacing_source=spacing_source,
+            fov_mm=readout_fov_mm,
+            oversampling=readout_oversampling,
+            crop_samples=readout_crop_samples,
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": f"reconstruct_grappa readout crop: {exc}"}
+
+    readout_crop_meta.update(crop_request)
+    if crop_target is not None and crop_target < readout_samples_before:
+        output_vol, crop_start, crop_stop = _crop_readout(
+            output_vol, axis=readout_axis, target=crop_target, np=np
+        )
+        if zerofilled_vol is not None:
+            zerofilled_vol, _, _ = _crop_readout(
+                zerofilled_vol, axis=readout_axis, target=crop_target, np=np
+            )
+        if readout_axis < 3:
+            origin_out[readout_axis] = crop_start * readout_spacing
+        readout_crop_meta.update(
+            {
+                "applied": True,
+                "samples_after": int(crop_target),
+                "removed_left": int(crop_start),
+                "removed_right": int(readout_samples_before - crop_stop),
+                "fov_after_mm": round(crop_target * readout_spacing, 4),
+                "origin_shift_mm": round(crop_start * readout_spacing, 4),
+            }
+        )
+        logger.info(
+            "[GRAPPA] Readout crop axis=%d: %d -> %d samples (%.1f -> %.1f mm), origin shift %.2f mm",
+            readout_axis,
+            readout_samples_before,
+            crop_target,
+            readout_samples_before * readout_spacing,
+            crop_target * readout_spacing,
+            crop_start * readout_spacing,
+        )
+    elif crop_target is not None:
+        readout_crop_meta["applied"] = False
+        readout_crop_meta["reason"] = (
+            f"requested readout width {crop_target} is not narrower than the "
+            f"{readout_samples_before} samples present; nothing was removed"
+        )
+
+    save_err = _save_volume_as_nifti(
+        vol=output_vol, spacing=spacing, output_path=output_path, np=np, origin=origin_out
+    )
     if save_err:
         return {"ok": False, "error": save_err}
 
     if zerofilled_vol is not None and zerofilled_path is not None:
         zf_err = _save_volume_as_nifti(
-            vol=zerofilled_vol, spacing=spacing, output_path=zerofilled_path, np=np
+            vol=zerofilled_vol,
+            spacing=spacing,
+            output_path=zerofilled_path,
+            np=np,
+            origin=origin_out,
         )
         if zf_err:
             return {"ok": False, "error": f"zero-filled reference: {zf_err}"}
@@ -1069,6 +1409,8 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
         "source_key": source_key,
         "output_shape": list(output_vol.shape),
         "pixel_spacing": spacing,
+        "pixel_spacing_source": spacing_source,
+        "readout_crop": dict(readout_crop_meta),
         "elapsed_seconds": round(elapsed, 2),
     }
     if full_shape:
@@ -1104,6 +1446,22 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
         warnings.append(
             f"all {n_frames} frames were already fully sampled, so no GRAPPA kernel was applied: "
             "the output is an IFFT + root-sum-of-squares coil combination of the acquired k-space"
+        )
+    # Advisory only.  This never crops on its own: it reports a measurement and
+    # names the explicit switches, because the H5 size attributes cannot tell a
+    # 2x-oversampled readout from a genuinely wide FOV.
+    if (
+        not readout_crop_meta.get("applied")
+        and outer_fraction is not None
+        and outer_fraction < _OUTER_FOV_ENERGY_HINT
+    ):
+        warnings.append(
+            f"only {outer_fraction:.2%} of the image energy lies outside the central half of "
+            f"readout axis {readout_axis} ({readout_samples_before} samples, "
+            f"{readout_samples_before * readout_spacing:.0f} mm at the reported spacing), which is "
+            "what uncropped readout oversampling looks like; if the vendor FOV is half this, pass "
+            "readout_fov_mm (or readout_oversampling / readout_crop_samples) to crop it. "
+            "No crop was applied."
         )
 
     return {
