@@ -102,6 +102,42 @@ GRAPPA_SPEC = ToolSpec(
                     "(i.e. in the per-frame sub-array).  Default: auto-detect."
                 ),
             },
+            "nonspatial_order": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": (
+                    "Dataset axis indices, a permutation of the auto-detected "
+                    "non-spatial axes, giving the order those axes take in the "
+                    "output volume after (x, y).  Default: ascending dataset order.  "
+                    "Use this when the dataset's leading axes are not already "
+                    "(slices, frames): CMRxRecon stores cine k-space as "
+                    "(frames, slices, coils, kx, ky), so nonspatial_order=[1, 0] "
+                    "is required to emit a NIfTI whose 3rd axis is slices and whose "
+                    "4th axis is time -- the layout every downstream 4-D cine tool "
+                    "assumes."
+                ),
+            },
+            "undersample_factor": {
+                "type": "integer",
+                "description": (
+                    "Retrospectively undersample fully-sampled input k-space by this "
+                    "uniform factor along ky before reconstruction, keeping the "
+                    "central `acs_lines` lines fully sampled.  Off by default: raw "
+                    "k-space is reconstructed exactly as acquired.  Set it only to "
+                    "exercise/benchmark GRAPPA on data that was acquired fully "
+                    "sampled -- the decimation is reported back in the `undersample` "
+                    "output block so no consumer can mistake the result for a "
+                    "reconstruction of prospectively accelerated data."
+                ),
+            },
+            "zerofilled_nifti": {
+                "type": "string",
+                "description": (
+                    "Explicit output path for the zero-filled (no-GRAPPA) reference "
+                    "volume.  Only written when undersample_factor is set; defaults "
+                    "to 'zerofilled_<stem>.nii.gz' beside the reconstruction."
+                ),
+            },
             "output_nifti": {
                 "type": "string",
                 "description": (
@@ -130,12 +166,14 @@ GRAPPA_SPEC = ToolSpec(
         "type": "object",
         "properties": {
             "reconstructed_nifti": {"type": "string"},
+            "zerofilled_nifti": {"type": "string"},
             "mode": {"type": "string"},
             "source_key": {"type": "string"},
             "kspace_shape": {"type": "array"},
             "output_shape": {"type": "array"},
             "n_coils": {"type": "integer"},
             "acs_lines_used": {"type": "integer"},
+            "undersample": {"type": "object"},
             "elapsed_seconds": {"type": "number"},
         },
     },
@@ -495,6 +533,43 @@ def _extract_calib_frame(
     return np.transpose(calib_raw, perm).astype(np.complex128)
 
 
+def _acs_bounds(ky: int, acs_lines: int) -> Tuple[int, int]:
+    """Centre ACS window used for calibration -- shared by masking and cropping.
+
+    ``_auto_acs_region`` and ``_uniform_undersample_mask`` MUST agree on this
+    window, otherwise a retrospectively decimated frame would hand GRAPPA a
+    calibration block containing zeroed lines.
+    """
+    half = acs_lines // 2
+    centre = ky // 2
+    start = max(0, centre - half)
+    end = min(ky, start + acs_lines)
+    return start, end
+
+
+def _uniform_undersample_mask(ky: int, factor: int, acs_lines: int, np):
+    """Boolean ky mask: every ``factor``-th line plus a fully-sampled centre."""
+    mask = np.zeros(int(ky), dtype=bool)
+    mask[:: max(1, int(factor))] = True
+    start, end = _acs_bounds(int(ky), int(acs_lines))
+    if end > start:
+        mask[start:end] = True
+    return mask
+
+
+def _retrospectively_undersample(frame, factor: int, acs_lines: int, np):
+    """Zero every ky line the mask drops.  Returns (frame, mask).
+
+    The input is *not* modified in place: ``frame`` is the caller's transposed
+    copy of the acquired k-space and the caller still needs the full data only
+    if it asked for no decimation.
+    """
+    mask = _uniform_undersample_mask(frame.shape[1], factor, acs_lines, np)
+    decimated = frame.copy()
+    decimated[:, ~mask, :] = 0
+    return decimated, mask
+
+
 def _auto_acs_region(frame, acs_lines: int):
     """
     Extract the fully-sampled centre of k-space as calibration data.
@@ -510,10 +585,7 @@ def _auto_acs_region(frame, acs_lines: int):
     """
     import numpy as np
     ky = frame.shape[1]
-    half = acs_lines // 2
-    centre = ky // 2
-    start = max(0, centre - half)
-    end = min(ky, start + acs_lines)
+    start, end = _acs_bounds(ky, acs_lines)
     calib = frame[:, start:end, :].copy()
     # Sanity: verify the ACS region is actually sampled
     energy = np.sum(np.abs(calib))
@@ -642,6 +714,31 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     kspace_key_arg = args.get("kspace_key")
     image_key_arg = args.get("image_key")
 
+    nonspatial_order_arg = args.get("nonspatial_order")
+    if nonspatial_order_arg is not None:
+        try:
+            nonspatial_order_arg = [int(v) for v in nonspatial_order_arg]
+        except Exception:
+            return {
+                "ok": False,
+                "error": f"nonspatial_order must be a list of integers, got {args.get('nonspatial_order')!r}",
+            }
+
+    undersample_factor = args.get("undersample_factor")
+    if undersample_factor is not None:
+        try:
+            undersample_factor = int(undersample_factor)
+        except Exception:
+            return {
+                "ok": False,
+                "error": f"undersample_factor must be an integer, got {args.get('undersample_factor')!r}",
+            }
+        if undersample_factor < 2:
+            return {
+                "ok": False,
+                "error": f"undersample_factor must be >= 2 (got {undersample_factor}); omit it to reconstruct k-space as acquired",
+            }
+
     output_subdir_raw = str(args.get("output_subdir", "grappa") or "grappa").strip()
     output_subdir = output_subdir_raw.replace("\\", "/")
     if output_subdir.startswith("./"):
@@ -670,6 +767,16 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
         output_path = out_dir / f"reconstructed_{stem}.nii.gz"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    zerofilled_path: Optional[Path] = None
+    if undersample_factor is not None:
+        zerofilled_arg = args.get("zerofilled_nifti")
+        if zerofilled_arg:
+            zerofilled_p = Path(str(zerofilled_arg).strip()).expanduser()
+            zerofilled_path = zerofilled_p.resolve() if zerofilled_p.is_absolute() else (out_dir / zerofilled_p).resolve()
+        else:
+            zerofilled_path = out_dir / f"zerofilled_{output_path.name.replace('reconstructed_', '')}"
+        zerofilled_path.parent.mkdir(parents=True, exist_ok=True)
+
     try:
         h5 = h5py.File(str(h5_path), "r")
     except Exception as exc:
@@ -678,10 +785,17 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     mode = "grappa"
     source_key = ""
     output_vol = None
+    zerofilled_vol = None
     full_shape: Tuple[int, ...] = tuple()
     n_coils = 0
     applied_grappa = 0
     skipped_grappa = 0
+    failed_grappa = 0
+    grappa_failures: List[str] = []
+    n_frames = 0
+    undersample_meta: Dict[str, Any] = {}
+    nonspatial_axes_used: List[int] = []
+    nonspatial_order_used: List[int] = []
     spacing: List[float] = [1.0, 1.0, 1.0]
 
     try:
@@ -750,6 +864,20 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
                 nonspatial, coil_ax, n_coils, kx_ax, kx_size, ky_ax, ky_size,
             )
 
+            # The frame loop below indexes the dataset in ascending axis order, so
+            # `nonspatial` must stay ascending here; a requested reordering is applied
+            # to the finished volume instead (see `nonspatial_order` handling after
+            # the loop).
+            nonspatial_axes_used = list(nonspatial)
+            nonspatial_order_used = list(nonspatial)
+            if nonspatial_order_arg is not None:
+                if sorted(nonspatial_order_arg) != sorted(nonspatial):
+                    raise ValueError(
+                        f"nonspatial_order={nonspatial_order_arg} is not a permutation of the "
+                        f"detected non-spatial axes {nonspatial} for k-space shape {full_shape}"
+                    )
+                nonspatial_order_used = list(nonspatial_order_arg)
+
             import itertools
 
             ns_ranges = [range(full_shape[ax]) for ax in nonspatial]
@@ -760,6 +888,9 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
             ns_sizes = tuple(int(full_shape[ax]) for ax in nonspatial)
             out_shape = (kx_size, ky_size) + ns_sizes
             magnitude_vol = np.zeros(out_shape, dtype=np.float32)
+            zerofilled_mag_vol = (
+                np.zeros(out_shape, dtype=np.float32) if undersample_factor is not None else None
+            )
 
             for fi, idx_tuple in enumerate(frame_indices):
                 selector = [None] * len(full_shape)
@@ -779,6 +910,32 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
                     coil_ax=coil_ax,
                 )
                 frame = np.transpose(frame_raw, perm).astype(np.complex128)
+
+                out_idx = (slice(None), slice(None)) + idx_tuple
+                if undersample_factor is not None:
+                    frame, us_mask = _retrospectively_undersample(
+                        frame, undersample_factor, acs_lines, np
+                    )
+                    if not undersample_meta:
+                        undersample_meta = {
+                            "applied": True,
+                            "pattern": "uniform_ky_plus_acs",
+                            "factor": int(undersample_factor),
+                            "acs_lines": int(acs_lines),
+                            "ky_lines_total": int(frame.shape[1]),
+                            "ky_lines_kept": int(us_mask.sum()),
+                            "sampled_fraction": round(float(us_mask.mean()), 6),
+                            "net_acceleration": round(
+                                float(frame.shape[1]) / float(max(1, int(us_mask.sum()))), 4
+                            ),
+                            "note": (
+                                "input k-space was fully sampled and was decimated by this "
+                                "tool before reconstruction; it is NOT prospectively "
+                                "accelerated data"
+                            ),
+                        }
+                    if zerofilled_mag_vol is not None:
+                        zerofilled_mag_vol[out_idx] = _ifft2_rss(frame)
 
                 if _is_undersampled(frame):
                     if calib_ds is not None:
@@ -812,21 +969,41 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
                             n_frames,
                             exc,
                         )
+                        # Counted separately: a frame that fell back to zero-filling is
+                        # neither "GRAPPA applied" nor "already fully sampled", and a run
+                        # where every frame failed must not look like a clean recon.
+                        failed_grappa += 1
+                        if len(grappa_failures) < 5:
+                            grappa_failures.append(f"frame {fi + 1}/{n_frames}: {type(exc).__name__}: {exc}")
                         recon = frame
                 else:
                     recon = frame
                     skipped_grappa += 1
 
                 mag = _ifft2_rss(recon)
-                out_idx = (slice(None), slice(None)) + idx_tuple
                 magnitude_vol[out_idx] = mag
 
                 if (fi + 1) % max(1, n_frames // 5) == 0 or fi == n_frames - 1:
                     logger.info("[GRAPPA] Reconstructed %d/%d frames", fi + 1, n_frames)
 
-            output_vol = magnitude_vol
-            while output_vol.ndim > 3 and output_vol.shape[-1] == 1:
-                output_vol = output_vol[..., 0]
+            def _order_nonspatial(vol):
+                if list(nonspatial_order_used) == list(nonspatial):
+                    return vol
+                perm_out = (0, 1) + tuple(2 + nonspatial.index(ax) for ax in nonspatial_order_used)
+                logger.info(
+                    "[GRAPPA] Reordering non-spatial axes %s -> %s (transpose %s)",
+                    nonspatial, nonspatial_order_used, perm_out,
+                )
+                return np.transpose(vol, perm_out)
+
+            def _squeeze_trailing(vol):
+                while vol.ndim > 3 and vol.shape[-1] == 1:
+                    vol = vol[..., 0]
+                return vol
+
+            output_vol = _squeeze_trailing(_order_nonspatial(magnitude_vol))
+            if zerofilled_mag_vol is not None:
+                zerofilled_vol = _squeeze_trailing(_order_nonspatial(zerofilled_mag_vol))
         else:
             mode = "image_passthrough"
             image_key = str(image_key_arg or "").strip()
@@ -856,6 +1033,13 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     if save_err:
         return {"ok": False, "error": save_err}
 
+    if zerofilled_vol is not None and zerofilled_path is not None:
+        zf_err = _save_volume_as_nifti(
+            vol=zerofilled_vol, spacing=spacing, output_path=zerofilled_path, np=np
+        )
+        if zf_err:
+            return {"ok": False, "error": f"zero-filled reference: {zf_err}"}
+
     elapsed = time.time() - t0
     logger.info("[GRAPPA] Saved %s in %.1fs (mode=%s)", output_path, elapsed, mode)
 
@@ -866,6 +1050,17 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
     artifacts: List[ArtifactRef] = [
         ArtifactRef(path=str(output_path), kind="nifti", description=desc),
     ]
+    if zerofilled_vol is not None and zerofilled_path is not None:
+        artifacts.append(
+            ArtifactRef(
+                path=str(zerofilled_path),
+                kind="nifti",
+                description=(
+                    "Zero-filled reference (same decimated k-space, no GRAPPA) "
+                    f"R={undersample_factor}, ACS={acs_lines}"
+                ),
+            )
+        )
 
     out_data: Dict[str, Any] = {
         "reconstructed_nifti": str(output_path),
@@ -884,17 +1079,37 @@ def reconstruct_grappa(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]
                 "kspace_key": source_key,
                 "n_coils": int(n_coils),
                 "acs_lines_used": int(acs_lines),
+                "frames_total": int(n_frames),
                 "grappa_applied_frames": int(applied_grappa),
                 "grappa_skipped_frames": int(skipped_grappa),
+                "grappa_failed_frames": int(failed_grappa),
                 "kernel_size": list(kernel_size),
+                "nonspatial_axes": list(nonspatial_axes_used),
+                "nonspatial_order": list(nonspatial_order_used),
             }
         )
+        out_data["undersample"] = dict(undersample_meta) if undersample_meta else {"applied": False}
+        if zerofilled_path is not None and zerofilled_vol is not None:
+            out_data["zerofilled_nifti"] = str(zerofilled_path)
     else:
         out_data.update({"image_key": source_key})
+
+    warnings: List[str] = []
+    if failed_grappa:
+        warnings.append(
+            f"pygrappa failed on {failed_grappa}/{n_frames} frames; those frames fell back to "
+            f"zero-filled reconstruction. First failures: {'; '.join(grappa_failures)}"
+        )
+    if mode == "grappa" and skipped_grappa == n_frames and n_frames:
+        warnings.append(
+            f"all {n_frames} frames were already fully sampled, so no GRAPPA kernel was applied: "
+            "the output is an IFFT + root-sum-of-squares coil combination of the acquired k-space"
+        )
 
     return {
         "ok": True,
         "data": out_data,
+        "warnings": warnings,
         "generated_artifacts": artifacts,
     }
 

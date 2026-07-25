@@ -15,5 +15,10 @@ dependencies:
   - tqdm
   - pyyaml
   - jsonschema
+  # Required to *dispatch* a tool into this tier, not by reconstruct_grappa itself:
+  # building the shell tool registry imports agent.loop -> react_failure_reflector ->
+  # mri_agent_shell.runtime.patch_spec, which is a pydantic model. Without it the tier
+  # can only be used by importing tools/reconstruct_grappa.py directly.
+  - pydantic>=2
   - pip:
       - pygrappa

@@ -4,7 +4,7 @@ Tool: compare_nifti_slices
 Deterministic side-by-side comparison of two NIfTI volumes.
 
 Extracts the centre axial slice from each volume and saves a side-by-side
-PNG. Handles 2-D, 3-D, and 4-D (takes first volume of 4-D) inputs.
+PNG. Handles 2-D, 3-D, and 4-D (centre frame of 4-D) inputs.
 """
 
 from __future__ import annotations
@@ -103,12 +103,16 @@ def _centre_axial_slice(arr, spacing, np_mod):
     the (y, x) grid.  The physical aspect ratio is ``spacing_x / spacing_y``
     so that ``imshow`` renders each voxel at its true physical size.
 
-    For 4-D data the first volume is taken.  For 2-D data, aspect defaults
-    to 1.0.
+    For 4-D data (e.g. a cine) the centre frame is taken, matching
+    ``generate_qa_snapshot`` so the two previews of the same volume show the
+    same anatomy.  For 2-D data, aspect defaults to 1.0.
     """
     a = np_mod.asarray(arr, dtype=np_mod.float32)
     if a.ndim == 4:
-        a = a[..., 0]  # take first volume
+        # SimpleITK yields (t, z, y, x) for a 4-D image, so the time axis is
+        # axis-0.  Indexing the LAST axis here (as this line used to) sliced off a
+        # single x column and rendered a (t, z) strip of noise labelled as anatomy.
+        a = a[a.shape[0] // 2]
     if a.ndim == 3:
         z = a.shape[0] // 2          # axis-0 == z in (z, y, x)
         slc = a[z, :, :]             # shape (y, x)
