@@ -53,6 +53,31 @@ This repository accompanies the MICCAI paper. It contains:
 
 ---
 
+## Demo
+
+A cardiac case driven end to end from **raw multi-coil k-space**, through GRAPPA
+reconstruction, sequence identification, cine segmentation, disease
+classification, evidence packaging and report generation. Each node is a real
+tool call; the amber node is executing, with its live elapsed time.
+
+![BCER executing a cardiac pipeline](docs/demo/pipeline.gif)
+
+![RV / myocardium / LV segmentation on the reconstructed cine](docs/demo/segmentation.png)
+
+The segmentation above is nnU-Net's RV (blue), myocardium (orange) and LV
+(green) on the reconstruction BCER produced. On the CMRxRecon short-axis case
+shown — geometry read from the vendor sidecar, nothing assumed — that run
+measured **LV EDV 132.7 mL, ESV 42.4 mL, ejection fraction 68.0 %** across 10 of
+14 slices, and GRAPPA at R=4 reached **NRMSE 0.051** against the fully-sampled
+reference versus 0.239 zero-filled.
+
+The user interface in these captures is a separate project:
+**[MRI_Agent_v4](https://github.com/Albertlongzi/MRI_Agent_v4)** — a web
+workstation that drives this engine. BCER itself is headless and is usable
+directly from the CLI or as a library.
+
+---
+
 ## Quickstart
 
 Five minutes, no medical data, no GPU, no model weights.
