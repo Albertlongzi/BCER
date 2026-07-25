@@ -20,10 +20,11 @@ from __future__ import annotations
 import base64
 import csv
 import json
+import re
 import math
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from commands.registry import Tool
 from commands.schemas import ArtifactRef, ToolContext, ToolSpec
@@ -58,6 +59,19 @@ REPORT_SPEC = ToolSpec(
             "temperature": {"type": "number"},
             "emit_structured_report_text": {"type": "boolean"},
             "domain": {"type": "string"},
+            "impression_mode": {
+                "type": "string",
+                "enum": ["template", "llm"],
+                "description": (
+                    "Impression generator. 'template' (default) is the deterministic, "
+                    "measurement-only baseline. 'llm' asks a local model for a grounded "
+                    "impression and falls back to the template on any transport failure, "
+                    "empty completion, ungrounded number, or unsupported clinical entity."
+                ),
+            },
+            "impression_llm_base_url": {"type": "string"},
+            "impression_llm_model": {"type": "string"},
+            "impression_llm_timeout_s": {"type": "integer"},
         },
         "required": ["case_state_path"],
     },
@@ -1389,19 +1403,739 @@ def _apply_structured_report_rules(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Reconstruction provenance
+# ---------------------------------------------------------------------------
+
+
+def _build_reconstruction_provenance(recon_ok: Optional[bool], recon: Any) -> Dict[str, Any]:
+    """
+    Distil `reconstruct_grappa`'s recorded stage output into the facts a report
+    must carry about how the images were produced.
+
+    Every field here is copied from the tool's own output block; nothing is
+    inferred and nothing is recomputed.
+
+    The one derived flag is ``retrospective``: `reconstruct_grappa` only emits
+    the ``undersample`` block when *it* decimated fully-sampled input k-space
+    (see `_retrospectively_undersample`), so ``undersample.applied is True``
+    means, by construction, retrospective undersampling -- not a prospectively
+    accelerated acquisition.
+    """
+    if not isinstance(recon, dict) or not recon:
+        return {"ok": False, "reason": "no_reconstruct_grappa_record"}
+    if recon_ok is not True:
+        return {"ok": False, "reason": "reconstruct_grappa_did_not_succeed"}
+
+    us_raw = recon.get("undersample") if isinstance(recon.get("undersample"), dict) else {}
+    rc_raw = recon.get("readout_crop") if isinstance(recon.get("readout_crop"), dict) else {}
+
+    undersample: Dict[str, Any] = {"applied": bool(us_raw.get("applied"))}
+    if undersample["applied"]:
+        undersample.update(
+            {
+                # Structural, not textual: this block exists only when the tool
+                # itself decimated fully sampled k-space.
+                "retrospective": True,
+                "pattern": us_raw.get("pattern"),
+                "factor": us_raw.get("factor"),
+                "acs_lines": us_raw.get("acs_lines"),
+                "ky_lines_total": us_raw.get("ky_lines_total"),
+                "ky_lines_kept": us_raw.get("ky_lines_kept"),
+                "sampled_fraction": us_raw.get("sampled_fraction"),
+                "net_acceleration": us_raw.get("net_acceleration"),
+                "tool_note": us_raw.get("note"),
+            }
+        )
+
+    readout_crop: Dict[str, Any] = {"applied": bool(rc_raw.get("applied"))}
+    if readout_crop["applied"]:
+        readout_crop.update(
+            {
+                "mode": rc_raw.get("mode"),
+                "axis": rc_raw.get("axis"),
+                "samples_before": rc_raw.get("samples_before"),
+                "samples_after": rc_raw.get("samples_after"),
+                "fov_before_mm": rc_raw.get("fov_before_mm"),
+                "fov_after_mm": rc_raw.get("fov_after_mm"),
+                "removed_left": rc_raw.get("removed_left"),
+                "removed_right": rc_raw.get("removed_right"),
+                "origin_shift_mm": rc_raw.get("origin_shift_mm"),
+                "outer_half_energy_fraction": rc_raw.get("outer_half_energy_fraction"),
+            }
+        )
+
+    out_shape = recon.get("output_shape") if isinstance(recon.get("output_shape"), list) else None
+    ns_order = recon.get("nonspatial_order") if isinstance(recon.get("nonspatial_order"), list) else None
+    n_slices: Optional[int] = None
+    n_phases: Optional[int] = None
+    # `reconstruct_grappa` documents that nonspatial_order=[1, 0] emits a volume
+    # whose 3rd axis is slices and whose 4th axis is cardiac phases.  Only claim
+    # the split when that documented layout actually applies.
+    if out_shape and len(out_shape) == 4 and ns_order == [1, 0]:
+        try:
+            n_slices = int(out_shape[2])
+            n_phases = int(out_shape[3])
+        except Exception:
+            n_slices = None
+            n_phases = None
+
+    h5_path = recon.get("h5_path")
+    return {
+        "ok": True,
+        "mode": recon.get("mode"),
+        "source_h5_path": h5_path,
+        "source_h5_name": (Path(str(h5_path)).name if h5_path else None),
+        "kspace_key": recon.get("kspace_key") or recon.get("source_key"),
+        "kspace_shape": recon.get("kspace_shape"),
+        "n_coils": recon.get("n_coils"),
+        "acs_lines_used": recon.get("acs_lines_used"),
+        "kernel_size": recon.get("kernel_size"),
+        "frames_total": recon.get("frames_total"),
+        "grappa_applied_frames": recon.get("grappa_applied_frames"),
+        "grappa_skipped_frames": recon.get("grappa_skipped_frames"),
+        "grappa_failed_frames": recon.get("grappa_failed_frames"),
+        "undersample": undersample,
+        "readout_crop": readout_crop,
+        "output_shape": out_shape,
+        "n_slices": n_slices,
+        "n_phases": n_phases,
+        "pixel_spacing": recon.get("pixel_spacing"),
+        "pixel_spacing_source": recon.get("pixel_spacing_source"),
+        "reconstructed_nifti": recon.get("reconstructed_nifti"),
+        "zerofilled_nifti": recon.get("zerofilled_nifti"),
+    }
+
+
+def _fmt_num(val: Any, digits: int = 1) -> Optional[str]:
+    """Format a measured number, or return None so the caller can omit the line."""
+    f = _safe_float(val)
+    if f is None:
+        return None
+    return f"{f:.{digits}f}"
+
+
+def _reconstruction_lines(prov: Dict[str, Any]) -> List[str]:
+    """Human-readable acquisition/reconstruction provenance. Empty if unknown."""
+    if not isinstance(prov, dict) or not prov.get("ok"):
+        return []
+    lines: List[str] = []
+
+    src_bits: List[str] = []
+    if prov.get("source_h5_name"):
+        src_bits.append(f"`{prov['source_h5_name']}`")
+    if prov.get("kspace_key"):
+        src_bits.append(f"dataset key `{prov['kspace_key']}`")
+    shape = prov.get("kspace_shape")
+    if isinstance(shape, list) and shape:
+        src_bits.append("k-space shape " + " x ".join(str(int(x)) for x in shape))
+    if prov.get("n_coils") is not None:
+        src_bits.append(f"{int(prov['n_coils'])} receive coils")
+    if src_bits:
+        lines.append("- Source: raw k-space, " + ", ".join(src_bits) + ".")
+
+    us = prov.get("undersample") if isinstance(prov.get("undersample"), dict) else {}
+    if us.get("applied"):
+        head_bits: List[str] = []
+        if us.get("factor") is not None:
+            head_bits.append(f"R={int(us['factor'])}")
+        if us.get("pattern"):
+            head_bits.append(str(us["pattern"]))
+        if us.get("acs_lines") is not None:
+            head_bits.append(f"{int(us['acs_lines'])} ACS lines")
+        head = ", ".join(head_bits) if head_bits else "undersampled"
+        lines.append(
+            "- RETROSPECTIVE UNDERSAMPLING: the input k-space was fully sampled and was "
+            f"decimated by this pipeline ({head}) before reconstruction. "
+            "This is NOT prospectively accelerated acquisition."
+        )
+        detail: List[str] = []
+        if us.get("ky_lines_kept") is not None and us.get("ky_lines_total") is not None:
+            detail.append(f"{int(us['ky_lines_kept'])} of {int(us['ky_lines_total'])} ky lines retained")
+        sf = _fmt_num(us.get("sampled_fraction"), 3)
+        if sf:
+            detail.append(f"sampled fraction {sf}")
+        na = _fmt_num(us.get("net_acceleration"), 2)
+        if na:
+            detail.append(f"net acceleration {na}x")
+        if detail:
+            lines.append("- Undersampling detail: " + "; ".join(detail) + ".")
+    elif us:
+        lines.append("- Undersampling: none applied; k-space reconstructed as stored.")
+
+    recon_bits: List[str] = []
+    mode = str(prov.get("mode") or "").strip()
+    if mode:
+        recon_bits.append(mode.upper() if mode.lower() == "grappa" else mode)
+    ks = prov.get("kernel_size")
+    if isinstance(ks, list) and len(ks) == 2:
+        recon_bits.append(f"kernel {int(ks[0])}x{int(ks[1])}")
+    if prov.get("acs_lines_used") is not None:
+        recon_bits.append(f"{int(prov['acs_lines_used'])} ACS lines")
+    if recon_bits:
+        frag = "- Reconstruction: " + ", ".join(recon_bits)
+        if prov.get("grappa_applied_frames") is not None and prov.get("frames_total") is not None:
+            frag += (
+                f"; applied to {int(prov['grappa_applied_frames'])} of "
+                f"{int(prov['frames_total'])} frames"
+            )
+            skipped = prov.get("grappa_skipped_frames")
+            failed = prov.get("grappa_failed_frames")
+            if skipped is not None or failed is not None:
+                frag += f" ({int(skipped or 0)} skipped, {int(failed or 0)} failed)"
+        lines.append(frag + ".")
+
+    rc = prov.get("readout_crop") if isinstance(prov.get("readout_crop"), dict) else {}
+    if rc.get("applied"):
+        bits: List[str] = []
+        if rc.get("samples_before") is not None and rc.get("samples_after") is not None:
+            bits.append(f"{int(rc['samples_before'])} -> {int(rc['samples_after'])} readout samples")
+        fb = _fmt_num(rc.get("fov_before_mm"))
+        fa = _fmt_num(rc.get("fov_after_mm"))
+        if fb and fa:
+            bits.append(f"readout FOV {fb} -> {fa} mm")
+        if rc.get("removed_left") is not None and rc.get("removed_right") is not None:
+            bits.append(f"{int(rc['removed_left'])} / {int(rc['removed_right'])} samples removed left / right")
+        os_mm = _fmt_num(rc.get("origin_shift_mm"))
+        if os_mm:
+            bits.append(f"origin shifted {os_mm} mm")
+        if bits:
+            lines.append("- Readout crop: " + "; ".join(bits) + ".")
+        oh = _fmt_num(rc.get("outer_half_energy_fraction"), 3)
+        if oh:
+            lines.append(f"- Fraction of readout energy in the discarded outer halves: {oh}.")
+    elif rc:
+        lines.append("- Readout crop: none applied.")
+
+    geom: List[str] = []
+    out_shape = prov.get("output_shape")
+    if isinstance(out_shape, list) and out_shape:
+        geom.append("reconstructed volume " + " x ".join(str(int(x)) for x in out_shape))
+    ps = prov.get("pixel_spacing")
+    if isinstance(ps, list) and len(ps) == 3:
+        try:
+            spacing = f"voxel {float(ps[0]):.4f} x {float(ps[1]):.4f} x {float(ps[2]):.4f} mm"
+            # Whether the spacing was read from the file or asserted by the
+            # caller changes how much weight the volumes can carry.
+            if prov.get("pixel_spacing_source"):
+                spacing += f" (spacing source: {prov['pixel_spacing_source']})"
+            geom.append(spacing)
+        except Exception:
+            pass
+    if geom:
+        lines.append("- Geometry: " + "; ".join(geom) + ".")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Cardiac measurements -> FINDINGS
+# ---------------------------------------------------------------------------
+
+
+def _cardiac_measurements(
+    cls_info: Dict[str, Any],
+    recon_prov: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Collect the cardiac quantities the pipeline actually measured.
+
+    Returns a list of {label, value, unit, digits, source} records.  Values that
+    the tools did not produce are simply absent -- nothing is estimated, nothing
+    is recomputed from masks here, and nothing is padded with a placeholder.
+    """
+    metrics = cls_info.get("metrics") if isinstance(cls_info.get("metrics"), dict) else {}
+    out: List[Dict[str, Any]] = []
+
+    def add(label: str, key: str, unit: str, digits: int = 1, source: str = "classify_cardiac_cine_disease") -> None:
+        val = _safe_float(metrics.get(key))
+        if val is None:
+            return
+        out.append({"label": label, "value": val, "unit": unit, "digits": digits, "source": source})
+
+    add("LV end-diastolic volume", "lv_edv_ml", "mL")
+    add("LV end-systolic volume", "lv_esv_ml", "mL")
+    add("LV ejection fraction", "lv_ef_percent", "%")
+    add("RV end-diastolic volume", "rv_edv_ml", "mL")
+    add("RV end-systolic volume", "rv_esv_ml", "mL")
+    add("RV ejection fraction", "rv_ef_percent", "%")
+    add("Myocardial volume at end-diastole", "myo_ed_volume_ml", "mL")
+    add("LV myocardial mass", "lv_mass_g", "g")
+    add("Maximum myocardial wall thickness", "max_myo_thickness_mm", "mm")
+    add("LV EDV indexed to BSA", "lv_edvi_ml_m2", "mL/m^2")
+    add("RV EDV indexed to BSA", "rv_edvi_ml_m2", "mL/m^2")
+    add("LV mass indexed to BSA", "lv_mass_index_g_m2", "g/m^2")
+    add("Body surface area", "bsa_m2", "m^2", digits=2)
+
+    if isinstance(recon_prov, dict) and recon_prov.get("ok"):
+        if recon_prov.get("n_slices") is not None:
+            out.append(
+                {
+                    "label": "Short-axis slices reconstructed",
+                    "value": float(recon_prov["n_slices"]),
+                    "unit": "",
+                    "digits": 0,
+                    "source": "reconstruct_grappa",
+                }
+            )
+        if recon_prov.get("n_phases") is not None:
+            out.append(
+                {
+                    "label": "Cardiac phases reconstructed",
+                    "value": float(recon_prov["n_phases"]),
+                    "unit": "",
+                    "digits": 0,
+                    "source": "reconstruct_grappa",
+                }
+            )
+    return out
+
+
+def _cardiac_findings_lines(
+    *,
+    cls_info: Dict[str, Any],
+    seg_info: Dict[str, Any],
+    recon_prov: Dict[str, Any],
+    n_segmented_frames: Optional[int],
+) -> List[str]:
+    """
+    FINDINGS as measurements.  File paths are deliberately excluded -- they are
+    recorded under PROVENANCE / ARTIFACTS instead.
+    """
+    metrics = cls_info.get("metrics") if isinstance(cls_info.get("metrics"), dict) else {}
+    phases = cls_info.get("phase_indices") if isinstance(cls_info.get("phase_indices"), dict) else {}
+    lines: List[str] = []
+
+    seg_ok = bool(seg_info.get("ok")) and bool(seg_info.get("cardiac_seg_path_abs") or seg_info.get("cardiac_seg_path"))
+    if not seg_ok and not metrics:
+        lines.append("- No cardiac cine segmentation or ventricular measurements are available from this run.")
+        return lines
+
+    lv_edv = _fmt_num(metrics.get("lv_edv_ml"))
+    lv_esv = _fmt_num(metrics.get("lv_esv_ml"))
+    lv_ef = _fmt_num(metrics.get("lv_ef_percent"))
+    lv_bits = [b for b in (
+        f"EDV {lv_edv} mL" if lv_edv else None,
+        f"ESV {lv_esv} mL" if lv_esv else None,
+        f"EF {lv_ef}%" if lv_ef else None,
+    ) if b]
+    if lv_bits:
+        lines.append("- Left ventricle: " + ", ".join(lv_bits) + ".")
+
+    rv_edv = _fmt_num(metrics.get("rv_edv_ml"))
+    rv_esv = _fmt_num(metrics.get("rv_esv_ml"))
+    rv_ef = _fmt_num(metrics.get("rv_ef_percent"))
+    rv_bits = [b for b in (
+        f"EDV {rv_edv} mL" if rv_edv else None,
+        f"ESV {rv_esv} mL" if rv_esv else None,
+        f"EF {rv_ef}%" if rv_ef else None,
+    ) if b]
+    if rv_bits:
+        lines.append("- Right ventricle: " + ", ".join(rv_bits) + ".")
+
+    myo_vol = _fmt_num(metrics.get("myo_ed_volume_ml"))
+    lv_mass = _fmt_num(metrics.get("lv_mass_g"))
+    max_thk = _fmt_num(metrics.get("max_myo_thickness_mm"))
+    myo_bits = [b for b in (
+        f"end-diastolic volume {myo_vol} mL" if myo_vol else None,
+        f"LV mass {lv_mass} g" if lv_mass else None,
+        f"maximum wall thickness {max_thk} mm" if max_thk else None,
+    ) if b]
+    if myo_bits:
+        lines.append("- Myocardium: " + ", ".join(myo_bits) + ".")
+
+    idx_bits = [b for b in (
+        f"LV EDVI {_fmt_num(metrics.get('lv_edvi_ml_m2'))} mL/m^2" if _fmt_num(metrics.get("lv_edvi_ml_m2")) else None,
+        f"RV EDVI {_fmt_num(metrics.get('rv_edvi_ml_m2'))} mL/m^2" if _fmt_num(metrics.get("rv_edvi_ml_m2")) else None,
+        f"LV mass index {_fmt_num(metrics.get('lv_mass_index_g_m2'))} g/m^2" if _fmt_num(metrics.get("lv_mass_index_g_m2")) else None,
+    ) if b]
+    if idx_bits:
+        lines.append("- Body-surface-indexed values: " + ", ".join(idx_bits) + ".")
+    elif metrics and "bsa_m2" in metrics and _safe_float(metrics.get("bsa_m2")) is None:
+        lines.append(
+            "- Body-surface-indexed values (LV/RV EDVI, LV mass index) not reported: "
+            "height and weight were not available to the pipeline."
+        )
+
+    ed_1 = phases.get("ed_frame_1based")
+    es_1 = phases.get("es_frame_1based")
+    if ed_1 is not None or es_1 is not None:
+        total = None
+        if isinstance(recon_prov, dict) and recon_prov.get("ok") and recon_prov.get("n_phases") is not None:
+            total = int(recon_prov["n_phases"])
+        elif n_segmented_frames:
+            total = int(n_segmented_frames)
+        parts = []
+        if ed_1 is not None:
+            parts.append(f"end-diastole at frame {int(ed_1)}" + (f" of {total}" if total else ""))
+        if es_1 is not None:
+            parts.append(f"end-systole at frame {int(es_1)}" + (f" of {total}" if total else ""))
+        src = str(phases.get("source") or "").strip()
+        how = {
+            "lv_volume_extrema": "selected as the frames of maximum and minimum segmented LV blood-pool volume",
+        }.get(src, (f"phase selection source: {src}" if src else ""))
+        line = "- Cardiac phases: " + ", ".join(parts)
+        if how:
+            line += f" ({how})"
+        lines.append(line + ".")
+
+    cov_bits: List[str] = []
+    if isinstance(recon_prov, dict) and recon_prov.get("ok"):
+        if recon_prov.get("n_slices") is not None and recon_prov.get("n_phases") is not None:
+            cov_bits.append(
+                f"{int(recon_prov['n_slices'])} short-axis slices x {int(recon_prov['n_phases'])} cardiac phases"
+            )
+        ps = recon_prov.get("pixel_spacing")
+        if isinstance(ps, list) and len(ps) == 3:
+            try:
+                cov_bits.append(
+                    f"in-plane {float(ps[0]):.2f} x {float(ps[1]):.2f} mm, slice thickness {float(ps[2]):.1f} mm"
+                )
+            except Exception:
+                pass
+    if n_segmented_frames:
+        cov_bits.append(f"segmentation run on {int(n_segmented_frames)} cine frames")
+    if cov_bits:
+        lines.append("- Coverage: " + "; ".join(cov_bits) + ".")
+
+    cproxy = metrics.get("local_contraction_proxy") if isinstance(metrics.get("local_contraction_proxy"), dict) else {}
+    valid = cproxy.get("valid_slices")
+    abn = cproxy.get("abnormal_slices")
+    if valid is not None and abn is not None:
+        mean_ratio = _fmt_num(cproxy.get("abnormal_ratio_mean"), 3)
+        txt = (
+            f"- Regional contraction proxy: myocardial area change from end-diastole to end-systole was "
+            f"measurable on {int(valid)} short-axis slices; {int(abn)} of these changed by less than 10%"
+        )
+        if mean_ratio:
+            txt += f" (mean fractional area change {mean_ratio})"
+        lines.append(txt + ".")
+
+    predicted_group = cls_info.get("predicted_group")
+    if predicted_group:
+        lines.append(f"- Rule-based disease class (non-diagnostic): {predicted_group}.")
+    rule_trace = cls_info.get("rule_trace") if isinstance(cls_info.get("rule_trace"), list) else []
+    for rule in rule_trace[:3]:
+        if str(rule or "").strip():
+            lines.append(f"- Classifier rule applied: {str(rule).strip()}")
+    gt = cls_info.get("ground_truth_group")
+    if gt:
+        lines.append(f"- Reference label recorded with the dataset: {gt}.")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Optional LLM impression (default OFF)
+# ---------------------------------------------------------------------------
+
+# Entities a cine-morphometry pipeline cannot assess.  If an LLM impression
+# mentions one, the impression is discarded and the deterministic template is
+# used instead.
+# Words an impression may use even though they carry no measurement: pure
+# connectives, articles, and the handful of comparative terms needed to read a
+# number back as a sentence. Deliberately small -- anything clinical must come
+# from the measurements themselves.
+_IMPRESSION_FUNCTION_WORDS: frozenset = frozenset("""
+a an and are as at be been both but by for from has have in into is it its no nor not
+of on or that the there these this to was were which with within without
+also overall respectively while whereas however therefore thus
+show shows shown demonstrate demonstrates indicate indicates measure measured measures
+remain remains report reported reports record recorded records give gives given
+value values study case run analysis section impression finding findings
+normal preserved reduced increased decreased elevated low high larger smaller
+above below over under between approximately about each per both all
+""".split())
+
+
+# Shared-prefix length that treats ventricle/ventricular and myocardium/
+# myocardial as the same term without letting unrelated words through.
+_IMPRESSION_STEM_LEN = 6
+
+# Standard expansions of abbreviations that appear in the measurements. These
+# introduce no new clinical entity -- they are the long form of a term the
+# pipeline already reported -- so the vocabulary whitelist accepts them. Keep
+# this list short, explicit and auditable; it is part of the safety guard.
+_IMPRESSION_ABBREVIATION_EXPANSIONS: Dict[str, Tuple[str, ...]] = {
+    "ef": ("ejection", "fraction"),
+    "edv": ("end", "diastolic", "volume"),
+    "esv": ("end", "systolic", "volume"),
+    "edvi": ("end", "diastolic", "volume", "index", "indexed"),
+    "lv": ("left", "ventricle", "ventricular"),
+    "rv": ("right", "ventricle", "ventricular"),
+    "myo": ("myocardium", "myocardial"),
+    "nor": ("group", "class", "category"),
+    "bsa": ("body", "surface", "area"),
+}
+
+_FILENAME_SUFFIXES: Tuple[str, ...] = (".nii", ".nii.gz", ".dcm", ".h5", ".hdf5", ".mha", ".nrrd", ".png", ".json")
+
+
+def _looks_like_filename(value: str) -> bool:
+    """True when a "description" is really just the file the data came from."""
+    low = str(value or "").strip().lower()
+    return bool(low) and (low.endswith(_FILENAME_SUFFIXES) or "/" in low)
+
+
+def _impression_content_words(text: str) -> List[str]:
+    """Lowercased alphabetic words of >=3 characters, function words removed."""
+    words = re.findall(r"[a-zA-Z][a-zA-Z\-']{2,}", str(text or "").lower())
+    return [w.strip("-'") for w in words if w.strip("-'") not in _IMPRESSION_FUNCTION_WORDS]
+
+
+def _contains_term(haystack: str, term: str) -> bool:
+    """Substring search that will not fire on a term embedded in another word.
+
+    Plain ``in`` made "scar" match "di-scar-ded"; that failed safe (it rejected a
+    valid impression) but it also made the guard look stricter than it is.
+    """
+    return re.search(r"(?<![a-z])" + re.escape(term), str(haystack or "").lower()) is not None
+
+
+def _impression_unsupported_words(content: str, measurement_lines: Sequence[str]) -> List[str]:
+    """Content words in *content* that do not appear in the supplied measurements.
+
+    This is the whitelist that makes the guard sound: the model may rephrase and
+    join what it was given, but it cannot introduce a clinical entity, an
+    attribute, or a patient fact that the pipeline never produced.
+    """
+    supplied_text = "\n".join(measurement_lines)
+    allowed = set(_impression_content_words(supplied_text))
+    # Admit the long form of any abbreviation actually present.
+    low_supplied = supplied_text.lower()
+    for abbrev, expansion in _IMPRESSION_ABBREVIATION_EXPANSIONS.items():
+        if re.search(r"(?<![a-z])" + abbrev + r"(?![a-z])", low_supplied):
+            allowed.update(expansion)
+    seen: List[str] = []
+    for word in _impression_content_words(content):
+        if word in allowed or word in seen:
+            continue
+        # Tolerate inflections and the adjective forms clinical prose needs:
+        # ventricle/ventricular, myocardium/myocardial, mass/masses. A shared
+        # six-character stem is enough for those and still rejects the words the
+        # exploit introduced (signal, chambers, unremarkable, characteristics),
+        # none of which stem-match anything in the measurements.
+        if any(word.rstrip("s") == a.rstrip("s") for a in allowed):
+            continue
+        if len(word) >= _IMPRESSION_STEM_LEN and any(
+            len(a) >= _IMPRESSION_STEM_LEN and word[:_IMPRESSION_STEM_LEN] == a[:_IMPRESSION_STEM_LEN]
+            for a in allowed
+        ):
+            continue
+        seen.append(word)
+    return seen
+
+
+_IMPRESSION_BANNED_SUBSTRINGS: Tuple[str, ...] = (
+    "late gadolinium",
+    "lge",
+    "scar",
+    "fibrosis",
+    "infarct",
+    "ischemi",
+    "ischaemi",
+    "perfusion",
+    "edema",
+    "oedema",
+    "valve",
+    "valvular",
+    "regurgitat",
+    "stenosis",
+    "thrombus",
+    "pericardial",
+    "effusion",
+    "aneurysm",
+    "myocarditis",
+    "amyloid",
+    "sarcoid",
+    "recommend",
+    "biopsy",
+    "should undergo",
+    "consistent with a diagnosis",
+)
+
+_NUMBER_RE = None
+
+
+def _extract_numbers(text: str) -> List[float]:
+    import re
+
+    global _NUMBER_RE
+    if _NUMBER_RE is None:
+        _NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+    out: List[float] = []
+    for tok in _NUMBER_RE.findall(str(text or "")):
+        try:
+            out.append(float(tok))
+        except Exception:
+            continue
+    return out
+
+
+def _impression_numbers_grounded(text: str, allowed: List[float]) -> Tuple[bool, Optional[float]]:
+    """
+    Every number in an LLM impression must be a number the pipeline measured
+    (optionally rounded to integer or one decimal).  Returns (ok, offending).
+    """
+    expanded: List[float] = []
+    for a in allowed:
+        try:
+            expanded.extend([float(a), float(round(a)), float(round(a, 1))])
+        except Exception:
+            continue
+    for x in _extract_numbers(text):
+        if not any(abs(x - a) <= 0.05 for a in expanded):
+            return False, x
+    return True, None
+
+
+def _ollama_no_think_chat(
+    *,
+    base_url: str,
+    model: str,
+    messages: List[Dict[str, str]],
+    timeout_s: int,
+    num_predict: int,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call Ollama's native /api/chat with thinking disabled.
+
+    Reasoning models served by Ollama spend the whole completion budget on the
+    chain of thought when thinking is enabled, and `message.content` comes back
+    empty.  `"think": false` suppresses the trace and returns the answer
+    directly.  The reasoning trace is never used as an impression.
+
+    Returns (content, error).
+    """
+    import urllib.error
+    import urllib.request
+
+    url = str(base_url or "").strip().rstrip("/")
+    for suffix in ("/v1/chat/completions", "/api/chat", "/v1"):
+        if url.lower().endswith(suffix):
+            url = url[: -len(suffix)].rstrip("/")
+            break
+    endpoint = f"{url}/api/chat"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "think": False,
+        "options": {"temperature": 0.0, "num_predict": int(num_predict)},
+    }
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:  # pragma: no cover - transport
+        return None, f"http_{exc.code}"
+    except Exception as exc:  # pragma: no cover - transport
+        return None, f"transport_error:{type(exc).__name__}"
+    msg = body.get("message") if isinstance(body.get("message"), dict) else {}
+    content = str(msg.get("content") or "").strip()
+    if not content:
+        return None, "empty_completion"
+    return content, None
+
+
+def _build_llm_impression(
+    *,
+    base_url: str,
+    model: str,
+    timeout_s: int,
+    measurement_lines: List[str],
+    allowed_numbers: List[float],
+    max_chars: int = 1200,
+) -> Dict[str, Any]:
+    """
+    Ask an LLM for an impression grounded ONLY in the measurements the pipeline
+    produced, then verify it before allowing it anywhere near the report.
+
+    Verification (all must pass, else the caller keeps the template):
+      * non-empty completion,
+      * length within `max_chars`,
+      * every number present in the measured set,
+      * no mention of an entity this pipeline cannot assess.
+    """
+    if not measurement_lines:
+        return {"ok": False, "reason": "no_measurements"}
+    system = (
+        "You are drafting the IMPRESSION section of a cardiac MRI research report. "
+        "You are given ONLY the measurements a segmentation-and-morphometry pipeline produced. "
+        "Rules, without exception: "
+        "(1) use only the numbers given, and quote them exactly as given; "
+        "(2) do not introduce any finding, structure, or disease the measurements do not cover -- "
+        "in particular say nothing about scar, fibrosis, infarction, perfusion, oedema, valves, "
+        "pericardium, or tissue characterisation, because none were imaged; "
+        "(3) you may restate the pipeline's own rule-based classification and the rule text verbatim; "
+        "(4) make no recommendations and no diagnosis; "
+        "(5) reply with 2 to 4 plain sentences, no headings, no bullet points, no preamble."
+    )
+    user = "Measurements from this study:\n" + "\n".join(measurement_lines) + "\n\nWrite the impression."
+    content, err = _ollama_no_think_chat(
+        base_url=base_url,
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        timeout_s=timeout_s,
+        num_predict=400,
+    )
+    if content is None:
+        return {"ok": False, "reason": err or "no_content"}
+    if len(content) > max_chars:
+        return {"ok": False, "reason": "too_long"}
+    ok_nums, offender = _impression_numbers_grounded(content, allowed_numbers)
+    if not ok_nums:
+        return {"ok": False, "reason": f"ungrounded_number:{offender}"}
+    low = content.lower()
+    supplied = "\n".join(measurement_lines).lower()
+    for bad in _IMPRESSION_BANNED_SUBSTRINGS:
+        if _contains_term(low, bad) and not _contains_term(supplied, bad):
+            return {"ok": False, "reason": f"unsupported_entity:{bad}"}
+    # The banned list is a blacklist and a blacklist cannot enumerate every
+    # unsupported clinical claim. Review demonstrated the hole: "the myocardium
+    # demonstrates normal signal characteristics ... within normal limits for
+    # this patient's age" carries no banned term and no ungrounded number, yet
+    # asserts tissue characterisation this pipeline never performs and an age it
+    # never had. So the real gate is a vocabulary whitelist: every content word
+    # in the impression must already appear in the measurements it was given.
+    stray = _impression_unsupported_words(content, measurement_lines)
+    if stray:
+        return {"ok": False, "reason": "unsupported_vocabulary:" + ",".join(stray[:5])}
+    return {"ok": True, "text": content, "model": model}
+
+
 def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     case_state_path = Path(args["case_state_path"]).expanduser().resolve()
     feature_table_path = args.get("feature_table_path")
 
     out_subdir = args.get("output_subdir", "report")
-    domain_name = str(args.get("domain") or "").strip().lower()
-    domain_cfg = get_domain_config(domain_name or "prostate")
     out_dir = ctx.artifacts_dir / out_subdir
     out_dir.mkdir(parents=True, exist_ok=True)
 
     state = json.loads(case_state_path.read_text(encoding="utf-8"))
     stage_outputs = state.get("stage_outputs", {}) or {}
     run_dir = case_state_path.parent
+
+    # Domain resolution, most trusted first:
+    #   1. explicit `domain` argument (what the planner/executor passes),
+    #   2. `metadata.domain` recorded on the CaseState by the run that produced it,
+    #   3. the historical default.
+    # (2) matters: the domain decides which domain-specific blocks the report is
+    # allowed to emit, and guessing it is how a cardiac case ended up carrying
+    # PI-RADS metadata.
+    domain_name = str(args.get("domain") or "").strip().lower()
+    state_meta = state.get("metadata") if isinstance(state.get("metadata"), dict) else {}
+    state_domain = str(state_meta.get("domain") or "").strip().lower()
+    if domain_name:
+        domain_source = "argument"
+    elif state_domain:
+        domain_source = "case_state.metadata.domain"
+    else:
+        domain_source = "default"
+    domain_cfg = get_domain_config(domain_name or state_domain or "prostate")
 
     vlm_dir = ctx.artifacts_dir / "vlm"
     vlm_dir.mkdir(parents=True, exist_ok=True)
@@ -1452,8 +2186,10 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     brain_seg_ok, brain_seg = best_record("brats_mri_segmentation")
     feat_ok, feat = best_record("extract_roi_features")
     lesion_ok, lesion = best_record("detect_lesion_candidates")
+    recon_ok, recon = best_record("reconstruct_grappa")
     seg_data = seg if bool(seg_ok) else (card_seg if isinstance(card_seg, dict) else {})
     seg_any_ok = bool(seg_ok) or bool(card_seg_ok)
+    recon_provenance = _build_reconstruction_provenance(recon_ok, recon)
 
     mapping = (ident.get("mapping", {}) if isinstance(ident, dict) else {}) or {}
     series = (ingest.get("series", []) if isinstance(ingest, dict) else []) or []
@@ -1650,6 +2386,7 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
             "segment_prostate_ok": bool(seg_ok),
             "segment_cardiac_cine_ok": bool(card_seg_ok),
             "classify_cardiac_cine_disease_ok": bool(card_cls_ok),
+            "reconstruct_grappa_ok": bool(recon_ok),
             "sequences_present": present,
         },
         # Back-compat: `features` points to the primary (prefer main) set.
@@ -1692,6 +2429,7 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
             "rule_trace": (card_cls.get("rule_trace") if isinstance(card_cls, dict) else None),
         },
         "cardiac_t1_feature_analysis": cardiac_t1_feature_analysis,
+        "reconstruction": recon_provenance,
         "qc_pngs": [to_short_path(p, run_dir=run_dir) for p in _gather_pngs(run_dir)],
         "notes": [
             "Ground all statements in evidence. If evidence is insufficient, say 'indeterminate' and list limitations.",
@@ -1834,7 +2572,10 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
             continue
         guess = str(s.get("sequence_guess") or s.get("series_name") or "series")
         desc = str(s.get("SeriesDescription") or s.get("series_name") or guess)
-        seq_descs.append(f"{guess}: {desc}")
+        # TECHNICAL FACTORS is narrative prose. When the only "description" we
+        # have is the file the volume came from (the NIfTI path case), naming the
+        # sequence is the fact; the filename belongs in PROVENANCE.
+        seq_descs.append(guess if _looks_like_filename(desc) or desc == guess else f"{guess}: {desc}")
         if str(s.get("sequence_guess")) == "DWI":
             bvals = s.get("b_values")
             if isinstance(bvals, list) and bvals:
@@ -2648,6 +3389,8 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
         return "PI-RADS indeterminate"
 
     clinical_lines: List[str] = []
+    impression_meta: Dict[str, Any] = {"source": "template", "requested": "template"}
+    cardiac_template_impression: List[str] = []
     brain_mode = domain_cfg.name == "brain"
     cardiac_mode = domain_cfg.name == "cardiac"
     if not brain_mode:
@@ -2680,10 +3423,8 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
         feat_ok = bool(features_main.get("ok")) if isinstance(features_main, dict) else False
         feat_table = features_main.get("feature_table_path") if isinstance(features_main, dict) else None
         t1_analysis = evidence_bundle.get("cardiac_t1_feature_analysis") if isinstance(evidence_bundle, dict) else None
-        lv_ef_txt = cls_metrics.get("lv_ef_percent") if isinstance(cls_metrics, dict) else None
-        rv_ef_txt = cls_metrics.get("rv_ef_percent") if isinstance(cls_metrics, dict) else None
-        lv_edv_txt = cls_metrics.get("lv_edv_ml") if isinstance(cls_metrics, dict) else None
-        rv_edv_txt = cls_metrics.get("rv_edv_ml") if isinstance(cls_metrics, dict) else None
+        card_case_results = card_seg.get("case_results") if isinstance(card_seg, dict) else None
+        n_segmented_frames = len(card_case_results) if isinstance(card_case_results, list) and card_case_results else None
         vlm_findings = ""
         vlm_impression = ""
         if isinstance(norm_struct, dict):
@@ -2699,41 +3440,20 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
         clinical_lines.append("**TECHNICAL FACTORS:**")
         clinical_lines.append(str(tech_text))
         clinical_lines.append("")
+        recon_lines = _reconstruction_lines(recon_provenance)
+        if recon_lines:
+            clinical_lines.append("**ACQUISITION AND RECONSTRUCTION:**")
+            clinical_lines.extend(recon_lines)
+            clinical_lines.append("")
         clinical_lines.append("**FINDINGS:**")
-        if isinstance(cardiac_seg, str) and cardiac_seg:
-            clinical_lines.append(f"- Cardiac cine segmentation generated: `{cardiac_seg}`")
-        else:
-            clinical_lines.append("- Cardiac cine segmentation unavailable.")
-        if isinstance(rv_mask, str) and rv_mask:
-            clinical_lines.append(f"- RV mask: `{rv_mask}`")
-        if isinstance(myo_mask, str) and myo_mask:
-            clinical_lines.append(f"- Myocardium mask: `{myo_mask}`")
-        if isinstance(lv_mask, str) and lv_mask:
-            clinical_lines.append(f"- LV mask: `{lv_mask}`")
-        if predicted_group:
-            clinical_lines.append(f"- Rule-based disease class: `{predicted_group}`")
-        if lv_ef_txt is not None:
-            try:
-                clinical_lines.append(f"- LV ejection fraction: {float(lv_ef_txt):.1f}%")
-            except Exception:
-                clinical_lines.append(f"- LV ejection fraction: {lv_ef_txt}")
-        if rv_ef_txt is not None:
-            try:
-                clinical_lines.append(f"- RV ejection fraction: {float(rv_ef_txt):.1f}%")
-            except Exception:
-                clinical_lines.append(f"- RV ejection fraction: {rv_ef_txt}")
-        if lv_edv_txt is not None:
-            try:
-                clinical_lines.append(f"- LV EDV: {float(lv_edv_txt):.1f} mL")
-            except Exception:
-                clinical_lines.append(f"- LV EDV: {lv_edv_txt}")
-        if rv_edv_txt is not None:
-            try:
-                clinical_lines.append(f"- RV EDV: {float(rv_edv_txt):.1f} mL")
-            except Exception:
-                clinical_lines.append(f"- RV EDV: {rv_edv_txt}")
-        if feat_ok and isinstance(feat_table, str) and feat_table:
-            clinical_lines.append(f"- ROI feature table: `{feat_table}`")
+        # Measurements only.  Artifact paths live under PROVENANCE / ARTIFACTS.
+        cardiac_findings = _cardiac_findings_lines(
+            cls_info=cls_info if isinstance(cls_info, dict) else {},
+            seg_info=seg_info if isinstance(seg_info, dict) else {},
+            recon_prov=recon_provenance,
+            n_segmented_frames=n_segmented_frames,
+        )
+        clinical_lines.extend(cardiac_findings)
         if isinstance(t1_analysis, dict) and bool(t1_analysis.get("ok")):
             qc = t1_analysis.get("qc") if isinstance(t1_analysis.get("qc"), dict) else {}
             gate_pass = bool(qc.get("gate_pass")) if isinstance(qc, dict) else False
@@ -2793,29 +3513,162 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
         if vlm_findings:
             clinical_lines.append("- VLM interpretation: " + vlm_findings)
         clinical_lines.append("")
-        clinical_lines.append("**IMPRESSION:**")
-        if isinstance(cardiac_seg, str) and cardiac_seg:
-            if predicted_group:
-                clinical_lines.append(f"1. Cardiac cine segmentation was successfully produced; rule-based class: {predicted_group}.")
+
+        # --- Deterministic impression (always computed; the baseline) ---------
+        template_impression: List[str] = []
+        n = 0
+
+        def _imp(text: str) -> None:
+            nonlocal n
+            n += 1
+            template_impression.append(f"{n}. {text}")
+
+        _lv_ef_s = _fmt_num(cls_metrics.get("lv_ef_percent"))
+        _rv_ef_s = _fmt_num(cls_metrics.get("rv_ef_percent"))
+        _lv_edv_s = _fmt_num(cls_metrics.get("lv_edv_ml"))
+        _rv_edv_s = _fmt_num(cls_metrics.get("rv_edv_ml"))
+        _lv_mass_s = _fmt_num(cls_metrics.get("lv_mass_g"))
+        if _lv_ef_s or _rv_ef_s:
+            fn_bits = [b for b in (
+                f"LV EF {_lv_ef_s}%" if _lv_ef_s else None,
+                f"RV EF {_rv_ef_s}%" if _rv_ef_s else None,
+            ) if b]
+            _imp("Biventricular systolic function measured from the cine segmentation: " + ", ".join(fn_bits) + ".")
+        if _lv_edv_s or _rv_edv_s or _lv_mass_s:
+            size_bits = [b for b in (
+                f"LV EDV {_lv_edv_s} mL" if _lv_edv_s else None,
+                f"RV EDV {_rv_edv_s} mL" if _rv_edv_s else None,
+                f"LV mass {_lv_mass_s} g" if _lv_mass_s else None,
+            ) if b]
+            _imp("Chamber size and mass: " + ", ".join(size_bits) + ".")
+        if predicted_group:
+            _rule_txt = ""
+            _rt = cls_info.get("rule_trace") if isinstance(cls_info.get("rule_trace"), list) else []
+            if _rt and str(_rt[0] or "").strip():
+                _rule_txt = f" ({str(_rt[0]).strip().rstrip('.')})"
+            _imp(f"Rule-based classifier assigned group {predicted_group}{_rule_txt}. This is a rule output, not a diagnosis.")
+        if isinstance(t1_analysis, dict) and bool(t1_analysis.get("ok")):
+            qc = t1_analysis.get("qc") if isinstance(t1_analysis.get("qc"), dict) else {}
+            if not bool(qc.get("gate_pass")):
+                _imp("T1 feature QC gate failed; T1 disease inference is withheld until mask/alignment issues are fixed.")
             else:
-                clinical_lines.append("1. Cardiac cine segmentation was successfully produced (RV/MYO/LV masks available as listed).")
-            if isinstance(t1_analysis, dict) and bool(t1_analysis.get("ok")):
-                qc = t1_analysis.get("qc") if isinstance(t1_analysis.get("qc"), dict) else {}
-                if not bool(qc.get("gate_pass")):
-                    clinical_lines.append("2. T1 feature QC gate failed; disease inference is withheld until mask/alignment issues are fixed.")
-                else:
-                    topk = t1_analysis.get("top_k_candidates") if isinstance(t1_analysis.get("top_k_candidates"), list) else []
-                    if topk and isinstance(topk[0], dict):
-                        clinical_lines.append(
-                            f"2. T1 evidence-first Top-1 candidate: {topk[0].get('label')} (score={topk[0].get('score')})."
-                        )
-            if needs_vlm_review:
-                clinical_lines.append("3. Classification is borderline/indeterminate by rules; VLM-assisted review is recommended.")
-            if vlm_impression:
-                idx = 4 if needs_vlm_review else 3
-                clinical_lines.append(f"{idx}. VLM summary: {vlm_impression}")
+                topk = t1_analysis.get("top_k_candidates") if isinstance(t1_analysis.get("top_k_candidates"), list) else []
+                if topk and isinstance(topk[0], dict):
+                    _imp(f"T1 evidence-first Top-1 candidate: {topk[0].get('label')} (score={topk[0].get('score')}).")
+        if needs_vlm_review:
+            _imp("Classification is borderline/indeterminate by rules; VLM-assisted review is suggested.")
+        if vlm_impression:
+            _imp(f"VLM summary: {vlm_impression}")
+        _us = recon_provenance.get("undersample") if isinstance(recon_provenance, dict) else None
+        if isinstance(_us, dict) and _us.get("applied") and _us.get("retrospective"):
+            _fac = _us.get("factor")
+            _imp(
+                "All measurements derive from images reconstructed after RETROSPECTIVE "
+                + (f"R={int(_fac)} " if _fac is not None else "")
+                + "undersampling of fully sampled k-space; the acquisition was not prospectively accelerated."
+            )
+        if not template_impression:
+            if isinstance(cardiac_seg, str) and cardiac_seg:
+                _imp("Cardiac cine segmentation completed, but no ventricular measurements were produced; no impression can be stated.")
+            else:
+                _imp("No cardiac cine segmentation or measurements are available; no impression can be stated.")
+
+        # --- Optional LLM impression (default OFF) ----------------------------
+        # Enabled only by an explicit `impression_mode="llm"`.  Any transport
+        # failure, empty completion, ungrounded number, or unsupported clinical
+        # entity falls back to the deterministic template above.
+        impression_mode = str(args.get("impression_mode") or "template").strip().lower()
+        impression_meta = {"source": "template", "requested": impression_mode}
+        cardiac_template_impression = list(template_impression)
+        final_impression = list(template_impression)
+        if impression_mode == "llm":
+            _measures = _cardiac_measurements(cls_info if isinstance(cls_info, dict) else {}, recon_provenance)
+            _m_lines: List[str] = []
+            _allowed: List[float] = []
+            for m in _measures:
+                _v = f"{float(m['value']):.{int(m['digits'])}f}"
+                _unit = f" {m['unit']}" if m["unit"] else ""
+                _m_lines.append(f"- {m['label']}: {_v}{_unit}")
+                _allowed.append(float(m["value"]))
+            if predicted_group:
+                _m_lines.append(f"- Rule-based classification group: {predicted_group}")
+            _rt = cls_info.get("rule_trace") if isinstance(cls_info.get("rule_trace"), list) else []
+            for _r in _rt[:2]:
+                if str(_r or "").strip():
+                    _m_lines.append(f"- Classifier rule text: {str(_r).strip()}")
+            _base = str(
+                args.get("impression_llm_base_url")
+                or args.get("server_base_url")
+                or "http://127.0.0.1:11434"
+            )
+            _model = str(args.get("impression_llm_model") or args.get("server_model") or "qwen3.6:27b")
+            _timeout = int(args.get("impression_llm_timeout_s") or 60)
+            impression_meta.update({"base_url": _base, "model": _model})
+            _res = _build_llm_impression(
+                base_url=_base,
+                model=_model,
+                timeout_s=_timeout,
+                measurement_lines=_m_lines,
+                allowed_numbers=_allowed,
+            )
+            if _res.get("ok"):
+                impression_meta["source"] = "llm"
+                final_impression = [str(_res["text"]).strip()]
+                _us_note = ""
+                if isinstance(_us, dict) and _us.get("applied") and _us.get("retrospective"):
+                    _fac = _us.get("factor")
+                    _us_note = (
+                        " Measurements derive from images reconstructed after RETROSPECTIVE "
+                        + (f"R={int(_fac)} " if _fac is not None else "")
+                        + "undersampling of fully sampled k-space."
+                    )
+                final_impression.append(
+                    f"(Impression drafted by `{_model}` from the measurements above and "
+                    f"checked against them; the deterministic template is retained in report.json.{_us_note})"
+                )
+            else:
+                impression_meta["fallback_reason"] = _res.get("reason")
+
+        clinical_lines.append("**IMPRESSION:**")
+        clinical_lines.extend(final_impression)
+
+        # --- Provenance / artifacts (paths belong here, not in FINDINGS) ------
+        prov_lines: List[str] = []
+        if isinstance(cardiac_seg, str) and cardiac_seg:
+            prov_lines.append(f"- Cardiac cine segmentation: `{cardiac_seg}`")
         else:
-            clinical_lines.append("1. Cardiac cine segmentation could not be confirmed from current pipeline artifacts.")
+            prov_lines.append("- Cardiac cine segmentation: not produced.")
+        if isinstance(rv_mask, str) and rv_mask:
+            prov_lines.append(f"- RV mask: `{rv_mask}`")
+        if isinstance(myo_mask, str) and myo_mask:
+            prov_lines.append(f"- Myocardium mask: `{myo_mask}`")
+        if isinstance(lv_mask, str) and lv_mask:
+            prov_lines.append(f"- LV mask: `{lv_mask}`")
+        if isinstance(cls_info, dict) and cls_info.get("classification_path"):
+            prov_lines.append(f"- Classification JSON: `{cls_info.get('classification_path')}`")
+        if feat_ok and isinstance(feat_table, str) and feat_table:
+            prov_lines.append(f"- ROI feature table: `{feat_table}`")
+        if isinstance(recon_provenance, dict) and recon_provenance.get("ok"):
+            if recon_provenance.get("source_h5_path"):
+                prov_lines.append(f"- Source k-space file: `{recon_provenance['source_h5_path']}`")
+            if recon_provenance.get("reconstructed_nifti"):
+                prov_lines.append(
+                    f"- Reconstructed image: `{to_short_path(str(recon_provenance['reconstructed_nifti']), run_dir=run_dir)}`"
+                )
+            if recon_provenance.get("zerofilled_nifti"):
+                prov_lines.append(
+                    f"- Zero-filled reference image: `{to_short_path(str(recon_provenance['zerofilled_nifti']), run_dir=run_dir)}`"
+                )
+        if prov_lines:
+            clinical_lines.append("")
+            clinical_lines.append("**PROVENANCE / ARTIFACTS:**")
+            clinical_lines.extend(prov_lines)
+        clinical_lines.append("")
+        clinical_lines.append("**LIMITATIONS:**")
+        clinical_lines.append(
+            "- Engineering demo output. Volumes, ejection fractions, mass and wall thickness are derived "
+            "from an automatic segmentation and a rule-based classifier; none of it is clinically validated."
+        )
     elif not brain_mode:
         indication = study_desc or "Not provided"
         comparison = "None."
@@ -3169,12 +4022,41 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     except Exception:
         pass
     lines.append("### Stage Status")
-    lines.append(f"- ingest_dicom_to_nifti: {'OK' if ingest_ok else 'missing/failed'}")
-    lines.append(f"- identify_sequences: {'OK' if ident_ok else 'missing/failed'}")
-    lines.append(f"- register_to_reference: {'OK' if reg_ok else 'missing/failed'}")
-    lines.append(f"- segment_prostate: {'OK' if seg_ok else 'missing/failed'}")
-    lines.append(f"- extract_roi_features: {'OK' if feat_ok else 'missing/failed'}")
+    # Only stages this domain actually has; see the domain-scoped `stage_status`
+    # built for report.json below.
+    _stage_pairs: List[Tuple[str, Any]] = [
+        ("ingest_dicom_to_nifti", ingest_ok),
+        ("identify_sequences", ident_ok),
+    ]
+    if domain_cfg.name == "cardiac":
+        _stage_pairs += [
+            ("reconstruct_grappa", recon_ok),
+            ("segment_cardiac_cine", card_seg_ok),
+            ("classify_cardiac_cine_disease", card_cls_ok),
+            ("extract_roi_features", feat_ok),
+        ]
+    elif domain_cfg.name == "brain":
+        _stage_pairs += [
+            ("register_to_reference", reg_ok),
+            ("brats_mri_segmentation", brain_seg_ok),
+            ("extract_roi_features", feat_ok),
+        ]
+    else:
+        _stage_pairs += [
+            ("register_to_reference", reg_ok),
+            ("segment_prostate", seg_ok),
+            ("extract_roi_features", feat_ok),
+        ]
+    for _sname, _sok in _stage_pairs:
+        lines.append(f"- {_sname}: {'OK' if _sok else 'missing/failed'}")
     lines.append("")
+
+    # Domain-independent: recorded whenever the case actually came from k-space.
+    _recon_md_lines = _reconstruction_lines(recon_provenance)
+    if _recon_md_lines:
+        lines.append("### Acquisition / Reconstruction")
+        lines.extend(_recon_md_lines)
+        lines.append("")
 
     lines.append("### Key Outputs")
     def _shorten_path(val: Optional[str]) -> Optional[str]:
@@ -3225,21 +4107,55 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
     report_txt_path = out_dir / "report.md"
     report_txt_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    report_json = {
+    # Stage status is domain-scoped: a cardiac run has no `segment_prostate`
+    # stage, and reporting one as "missing/failed" is a false statement about
+    # the pipeline rather than a fact about the case.
+    stage_status: Dict[str, Any] = {
+        "ingest_dicom_to_nifti": ingest_ok,
+        "identify_sequences": ident_ok,
+    }
+    if domain_cfg.name == "cardiac":
+        stage_status.update(
+            {
+                "reconstruct_grappa": recon_ok,
+                "segment_cardiac_cine": card_seg_ok,
+                "classify_cardiac_cine_disease": card_cls_ok,
+                "extract_roi_features": feat_ok,
+            }
+        )
+    elif domain_cfg.name == "brain":
+        stage_status.update(
+            {
+                "register_to_reference": reg_ok,
+                "brats_mri_segmentation": brain_seg_ok,
+                "extract_roi_features": feat_ok,
+            }
+        )
+    else:
+        stage_status.update(
+            {
+                "register_to_reference": reg_ok,
+                "segment_prostate": seg_ok,
+                "extract_roi_features": feat_ok,
+            }
+        )
+
+    report_json: Dict[str, Any] = {
         "case_id": state.get("case_id"),
         "run_id": state.get("run_id"),
+        "domain": domain_cfg.name,
+        "domain_source": domain_source,
         "sequences_present": present,
         "mapping": mapping,
         "feature_table_path": evidence_bundle.get("features", {}).get("feature_table_path"),
         "vlm_evidence_bundle_path": str(vlm_evidence_bundle_path),
-        "stage_status": {
-            "ingest_dicom_to_nifti": ingest_ok,
-            "identify_sequences": ident_ok,
-            "register_to_reference": reg_ok,
-            "segment_prostate": seg_ok,
-            "extract_roi_features": feat_ok,
-        },
-        "lesion_assessment_meta": {
+        "stage_status": stage_status,
+    }
+
+    # Domain-specific blocks.  A cardiac report must not carry PI-RADS
+    # structures and a prostate report must not carry cardiac ones.
+    if domain_cfg.name == "prostate":
+        report_json["lesion_assessment_meta"] = {
             "evidence_tier": evidence_tier,
             "lesion_tool_status": lesion_tool_status,
             "adc_available": adc_available,
@@ -3249,10 +4165,39 @@ def generate_report(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
             "lesion_max_prob": lesion_max_prob,
             "final_overall_pirads": final_overall_score,
             "final_overall_pirads_range": final_overall_range,
-        },
-        "cardiac_t1_feature_analysis": evidence_bundle.get("cardiac_t1_feature_analysis"),
-        "limitations": [],
-    }
+        }
+    elif domain_cfg.name == "cardiac":
+        _card_ev = evidence_bundle.get("cardiac_classification") if isinstance(evidence_bundle, dict) else {}
+        _card_ev = _card_ev if isinstance(_card_ev, dict) else {}
+        report_json["cardiac_assessment"] = {
+            "classification_ok": bool(card_cls_ok),
+            "predicted_group": _card_ev.get("predicted_group"),
+            "ground_truth_group": _card_ev.get("ground_truth_group"),
+            "needs_vlm_review": _card_ev.get("needs_vlm_review"),
+            "metrics": _card_ev.get("metrics"),
+            "phase_indices": _card_ev.get("phase_indices"),
+            "rule_trace": _card_ev.get("rule_trace"),
+            "segmentation_ok": bool(card_seg_ok),
+        }
+        report_json["cardiac_t1_feature_analysis"] = evidence_bundle.get("cardiac_t1_feature_analysis")
+        report_json["impression"] = {
+            **impression_meta,
+            "template_lines": cardiac_template_impression,
+        }
+    elif domain_cfg.name == "brain":
+        report_json["brain_assessment"] = {
+            "segmentation_ok": bool(brain_seg_ok),
+            "wt_volume_ml": brain_wt_vol_ml,
+            "tc_volume_ml": brain_tc_vol_ml,
+            "et_volume_ml": brain_et_vol_ml,
+        }
+
+    # Reconstruction provenance is domain-independent: it is recorded whenever
+    # the case actually came from raw k-space.
+    if isinstance(recon_provenance, dict) and recon_provenance.get("ok"):
+        report_json["reconstruction"] = recon_provenance
+
+    report_json["limitations"] = []
 
     report_json_path = out_dir / "report.json"
     report_json_path.write_text(json.dumps(report_json, indent=2) + "\n", encoding="utf-8")
