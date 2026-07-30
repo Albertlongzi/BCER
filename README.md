@@ -60,11 +60,9 @@ reconstruction, sequence identification, cine segmentation, disease
 classification, evidence packaging and report generation. Each node is a real
 tool call; the amber node is executing, with its live elapsed time.
 
-![BCER executing a cardiac pipeline](docs/demo/pipeline.gif)
+https://github.com/user-attachments/assets/c9df0f56-028f-4325-8a34-ebd85a0497d5
 
-![RV / myocardium / LV segmentation on the reconstructed cine](docs/demo/segmentation.png)
-
-The segmentation above is nnU-Net's RV (blue), myocardium (orange) and LV
+The video shows nnU-Net's RV (blue), myocardium (orange) and LV
 (green) on the reconstruction BCER produced. On the CMRxRecon short-axis case
 shown — geometry read from the vendor sidecar, nothing assumed — that run
 measured **LV EDV 132.7 mL, ESV 42.4 mL, ejection fraction 68.0 %** across 10 of
