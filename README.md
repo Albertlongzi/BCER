@@ -1,5 +1,11 @@
 <h1 align="center">BCER</h1>
 
+## Evaluation update
+
+During our post-publication review, we identified a previously unrecognized issue in the baseline evaluation harness. Preliminary reruns with a revised harness indicate that this issue substantially affected the comparative results on the prostate reporting task. We are currently validating the changes and rerunning the remaining evaluations. Until this verification is complete, the originally reported performance gaps and their attribution should not be regarded as established conclusions.
+
+---
+
 <p align="center">
   <b>Brain–Cerebellum–Extremity–Reflector</b><br>
   An agent framework for reliable execution of long-horizon MRI analysis workflows.
@@ -267,3 +273,4 @@ Issues and pull requests are welcome.
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
