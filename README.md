@@ -4,6 +4,11 @@
 
 During our post-publication review, we identified a previously unrecognized issue in the baseline evaluation harness. Preliminary reruns with a revised harness indicate that this issue substantially affected the comparative results on the prostate reporting task. We are currently validating the changes and rerunning the remaining evaluations. Until this verification is complete, the originally reported performance gaps and their attribution should not be regarded as established conclusions.
 
+The ReAct baseline arms (`react`, `react_token`, `react_token_reflector`) are temporarily withdrawn
+from the benchmark CLI while the corrected harness is validated. BCER, the tool wrappers and the
+benchmark tasks remain available. The baseline arms will return, together with the corrected
+results, once validation is complete.
+
 ---
 
 <p align="center">
@@ -155,9 +160,9 @@ The benchmark exercises one `(task, arm)` cell per run.
 | Paper label | CLI flag |
 | --- | --- |
 | BCER | `--arm bcer` (alias for `bcer_sketch`) |
-| ReAct | `--arm react` |
-| ReAct + symbolic binding | `--arm react_token` |
-| ReAct + binding + bounded reflector | `--arm react_token_reflector` |
+| ReAct | temporarily withdrawn |
+| ReAct + symbolic binding | temporarily withdrawn |
+| ReAct + binding + bounded reflector | temporarily withdrawn |
 
 Run one task/arm cell against a manifest you built locally:
 

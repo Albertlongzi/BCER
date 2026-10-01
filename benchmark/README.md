@@ -5,9 +5,9 @@ This benchmark exposes the paper-facing controller modes only:
 | Paper label | CLI arm | Internal runtime |
 | --- | --- | --- |
 | BCER | `bcer` or `bcer_sketch` | constrained sketch planner + compiler + Cerebellum + bounded reflector |
-| ReAct | `react` | direct reactive tool calls |
-| ReAct+Bind | `react_token` | reactive calls with symbolic binding |
-| ReAct+Bind+Ref | `react_token_reflector` | reactive calls with binding and bounded reflection |
+| ReAct | temporarily withdrawn | direct reactive tool calls |
+| ReAct+Bind | temporarily withdrawn | reactive calls with symbolic binding |
+| ReAct+Bind+Ref | temporarily withdrawn | reactive calls with binding and bounded reflection |
 
 ## Run
 

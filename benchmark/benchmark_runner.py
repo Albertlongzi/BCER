@@ -36,7 +36,7 @@ from core.domain_config import get_domain_config
 from core.paths import project_root
 
 
-PAPER_ARM_CHOICES = ("bcer", "bcer_sketch", "react", "react_token", "react_token_reflector")
+PAPER_ARM_CHOICES = ("bcer", "bcer_sketch")
 ARM_ALIASES = {"bcer": "bcer_sketch"}
 ARM_CHOICES = PAPER_ARM_CHOICES
 FAULT_CHOICES = (
